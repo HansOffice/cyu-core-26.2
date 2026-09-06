@@ -168,3 +168,17 @@ The new v776 encoders are not wired into live sessions yet. The opaque bootstrap
 ### Why
 
 The first typed-JSON decoder was designed before inspecting the actual generated 26.2 payload shape. Keeping that private dialect would create a needless conversion layer and long-term compatibility burden. Because the Registry/Data branch is not merged yet, the mismatch was corrected immediately rather than preserving accidental compatibility with an unused format.
+
+## 2026-09-07 — Mojang registry report ingestion
+
+### What changed
+
+- Added `internal/vanilla/datagen` as the source-specific boundary for official Mojang server datagen reports.
+- Added a strict parser for `generated/reports/registries.json` that treats protocol IDs as authoritative ordering and resource identifiers as identity.
+- Registry and entry JSON maps are normalized deterministically; source map iteration order is never used as a runtime-ID signal.
+- Duplicate protocol IDs, invalid resource locations, unknown fields, negative IDs and defaults pointing at missing entries are rejected during import.
+- The parser allows registries and entries without protocol IDs so datapack-backed/dynamic registry report surfaces can be represented without inventing numeric IDs.
+
+### Boundary decision
+
+`registries.json` is an authority for registry/entry identity and numeric IDs where those IDs are present. It is not treated as an authority for synchronized Configuration `RegistryData` NBT payloads. Dynamic datapack registries such as `minecraft:worldgen/world_preset` require a separate value-generation path; keeping these responsibilities separate prevents static registry indexing from being mistaken for a complete Configuration dataset.

@@ -1,0 +1,7 @@
+# Binaries
+cyu-server-*
+cyu-core-*
+*.exe
+
+# Logs
+logs/

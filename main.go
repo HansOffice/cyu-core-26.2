@@ -4,10 +4,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 func main() {
 	printServerBanner()
+	startupStarted := time.Now()
 
 	cfgMgr := NewConfigManager("config.yml")
 	cfg, err := cfgMgr.Load()
@@ -22,7 +24,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	printServerBoot(cfg)
+	printServerBoot(cfg, time.Since(startupStarted))
 
 	stopChan := make(chan struct{})
 

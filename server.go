@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"cyu-core-26.2/internal/runtime/tick"
 )
 
 type Server struct {
@@ -23,6 +25,7 @@ type Server struct {
 	totalPackets atomic.Int64
 	world        *World
 	cmdHandler   *CommandHandler
+	tickLoop     *tick.Loop
 }
 
 func NewServer(configMgr *ConfigManager) *Server {
@@ -32,6 +35,7 @@ func NewServer(configMgr *ConfigManager) *Server {
 		world:     NewWorld(cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ),
 	}
 	s.cmdHandler = NewCommandHandler(s)
+	s.tickLoop = tick.New(tick.DefaultRate, s.tick)
 	return s
 }
 
@@ -48,7 +52,7 @@ func (s *Server) Start() error {
 
 	go s.acceptLoop()
 	go s.keepAliveLoop()
-	go s.timeLoop()
+	s.tickLoop.Start()
 
 	return nil
 }
@@ -57,6 +61,7 @@ func (s *Server) Stop() {
 	if !s.running.Swap(false) {
 		return
 	}
+	s.tickLoop.Stop()
 	s.BroadcastSystemMessage("&c[CyuCore] 服务端正在关闭...")
 	s.players.Range(func(key, value interface{}) bool {
 		if session, ok := value.(*PlayerSession); ok {
@@ -105,15 +110,15 @@ func (s *Server) keepAliveLoop() {
 	}
 }
 
-func (s *Server) timeLoop() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for s.running.Load() {
-		<-ticker.C
-		age, tod := s.world.AdvanceTime(20)
+func (s *Server) tick() {
+	age, tod := s.world.AdvanceTime(1)
+	if age%tick.DefaultRate == 0 {
 		s.BroadcastPacket(PlayPktClientBoundSetTime, buildSetTime(age, tod))
 	}
+}
+
+func (s *Server) TickMetrics() tick.Snapshot {
+	return s.tickLoop.Snapshot()
 }
 
 func (s *Server) AddPlayer(session *PlayerSession) {

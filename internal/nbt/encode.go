@@ -66,6 +66,7 @@ func writePayload(w io.Writer, value Value, depth int) error {
 			if err := writeUint32(w, uint32(entry)); err != nil {
 				return err
 			}
+		}
 		return nil
 	case LongArray:
 		if err := writeLength(w, len(value)); err != nil {
@@ -75,6 +76,7 @@ func writePayload(w io.Writer, value Value, depth int) error {
 			if err := writeUint64(w, uint64(entry)); err != nil {
 				return err
 			}
+		}
 		return nil
 	default:
 		return fmt.Errorf("nbt: unsupported value implementation %T", value)

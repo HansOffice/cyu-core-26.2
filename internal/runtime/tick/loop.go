@@ -26,6 +26,7 @@ type Loop struct {
 
 	lifecycleMu sync.Mutex
 	running     atomic.Bool
+	stopping    bool
 	stopCh      chan struct{}
 	doneCh      chan struct{}
 
@@ -53,7 +54,7 @@ func (l *Loop) Start() bool {
 	l.lifecycleMu.Lock()
 	defer l.lifecycleMu.Unlock()
 
-	if l.running.Load() {
+	if l.running.Load() || l.stopping {
 		return false
 	}
 
@@ -66,17 +67,23 @@ func (l *Loop) Start() bool {
 
 func (l *Loop) Stop() bool {
 	l.lifecycleMu.Lock()
-	if !l.running.Load() {
+	if !l.running.Load() || l.stopping {
 		l.lifecycleMu.Unlock()
 		return false
 	}
+
+	l.stopping = true
 	stopCh := l.stopCh
 	doneCh := l.doneCh
-	l.running.Store(false)
 	close(stopCh)
 	l.lifecycleMu.Unlock()
 
 	<-doneCh
+
+	l.lifecycleMu.Lock()
+	l.running.Store(false)
+	l.stopping = false
+	l.lifecycleMu.Unlock()
 	return true
 }
 

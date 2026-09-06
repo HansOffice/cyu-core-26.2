@@ -96,3 +96,16 @@ This is a documented temporary exception, not a general generated-code exemption
 ### Known remaining concurrency work
 
 Player transform/gameplay fields (`x/y/z`, rotation, on-ground state, game mode and teleport sequence) are still shared between network and server paths. They are intentionally not hidden by ad-hoc atomics here; the next runtime-ownership migration will move these mutations behind a coherent player-state boundary.
+
+## 2026-09-06 — Tick lifecycle self-review fix
+
+### What changed
+
+- Added an explicit `stopping` lifecycle state to the tick loop.
+- `running` remains true until the active tick goroutine has actually exited; a concurrent `Start` can no longer create a second loop during shutdown.
+- Concurrent/repeated Stop attempts do not close the stop channel twice.
+- Added restart and stop/start overlap regression tests.
+
+### Why
+
+A post-implementation PR self-review found that the first Stop implementation published `running=false` before waiting for the old goroutine to exit. That left a narrow window where another caller could start a second tick loop. The code compiled and CI was green, but the lifecycle invariant was wrong, so it was fixed before merge rather than accepted as a theoretical edge case.

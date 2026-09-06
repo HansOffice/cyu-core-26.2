@@ -13,7 +13,10 @@ import (
 
 const ManifestSchemaVersion = 1
 
-const MojangServerDatagen = "mojang-server-datagen"
+const (
+	MojangServerDatagen  = "mojang-server-datagen"
+	MojangServerCapture  = "mojang-server-capture"
+)
 
 // Version identifies the Minecraft data contract a generated dataset targets.
 type Version struct {
@@ -83,7 +86,7 @@ func (m Manifest) Validate(expected Version) error {
 		return fmt.Errorf("datagen manifest: data version %d, want %d", m.Version.Data, expected.Data)
 	}
 
-	if m.Source.Kind != MojangServerDatagen {
+	if m.Source.Kind != MojangServerDatagen && m.Source.Kind != MojangServerCapture {
 		return fmt.Errorf("datagen manifest: unsupported source kind %q", m.Source.Kind)
 	}
 	if err := validateSHA256(m.Source.ServerJarSHA256); err != nil {

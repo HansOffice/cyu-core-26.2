@@ -133,7 +133,7 @@ A post-implementation PR self-review found that the first Stop implementation pu
 
 - Added a standalone Java Edition network-NBT value/encoder layer with deterministic compound output, homogeneous-list validation, exact big-endian primitive encoding and Java Modified UTF-8 strings.
 - Kept NBT independent of Registry and protocol-v776 packages so the same implementation can later serve block entities, item/component data and persistence boundaries.
-- Added a canonical typed-JSON NBT interchange format for generated data. Every numeric value declares its exact NBT type (`byte`, `short`, `int`, `long`, `float`, `double`) instead of relying on JSON number inference.
+- Added a typed-JSON NBT interchange boundary for generated data. Every numeric value declares its exact NBT type (`byte`, `short`, `int`, `long`, `float`, `double`) instead of relying on JSON number inference.
 - Migrated runtime registry entries from opaque `json.RawMessage` payloads to immutable `nbt.Value` trees with defensive deep copies.
 - Registry dataset decoding now rejects ambiguous untyped payloads before they can reach the network encoder.
 
@@ -154,3 +154,17 @@ RegistryData carries optional anonymous NBT. Keeping registry payloads as arbitr
 ### Constraint
 
 The new v776 encoders are not wired into live sessions yet. The opaque bootstrap remains active until a complete, provenance-pinned 26.2 dataset passes graph validation and the encoded Configuration sequence is verified against a vanilla client. This keeps migration reversible and avoids replacing a known-working bootstrap with incomplete structured data.
+
+## 2026-09-07 — Align typed NBT ingestion with source format
+
+### What changed
+
+- Replaced the temporary CyuCore-specific typed-NBT JSON list/array dialect with direct decoding of the `prismarine-nbt` representation used by the candidate 26.2 generated data source.
+- Lists now preserve the source-declared element type, including empty lists, instead of repeating a full `{type,value}` wrapper for every element.
+- `long` and `longArray` values now decode ProtoDef's signed `[high, low]` int32-pair representation exactly.
+- Array type names now match the source format (`byteArray`, `intArray`, `longArray`).
+- `shortArray` is rejected because CyuCore's Java network-NBT model has no corresponding standard wire tag; the importer must never silently substitute another type.
+
+### Why
+
+The first typed-JSON decoder was designed before inspecting the actual generated 26.2 payload shape. Keeping that private dialect would create a needless conversion layer and long-term compatibility burden. Because the Registry/Data branch is not merged yet, the mismatch was corrected immediately rather than preserving accidental compatibility with an unused format.

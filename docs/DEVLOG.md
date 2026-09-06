@@ -68,3 +68,17 @@ The project is entering architectural migration. A server core cannot rely on ma
 ### Why
 
 Binary wire format is a foundational boundary. Future version-specific packet structs can build on one tested codec rather than duplicating byte handling across `buildXXX()` functions. Compatibility wrappers keep this migration small and reversible.
+
+## 2026-09-06 — CI bootstrap formatting exception
+
+### What happened
+
+The first CI run failed before compilation because the prototype's `registries.go` blob file was already not `gofmt`-clean. That file is an opaque Base64/GZip bootstrap payload scheduled for replacement by structured registry/tag data.
+
+### Decision
+
+- Keep strict formatting checks for every other Go source file.
+- Temporarily exclude exactly `registries.go` from the formatting gate rather than reformatting or normalizing a data blob we intend to delete.
+- The exclusion must be removed in the same migration that removes the opaque registry bootstrap.
+
+This is a documented temporary exception, not a general generated-code exemption.

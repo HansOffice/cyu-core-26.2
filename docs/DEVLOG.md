@@ -109,3 +109,20 @@ Player transform/gameplay fields (`x/y/z`, rotation, on-ground state, game mode 
 ### Why
 
 A post-implementation PR self-review found that the first Stop implementation published `running=false` before waiting for the old goroutine to exit. That left a narrow window where another caller could start a second tick loop. The code compiled and CI was green, but the lifecycle invariant was wrong, so it was fixed before merge rather than accepted as a theoretical edge case.
+
+## 2026-09-06 — Structured registry graph foundation
+
+### What changed
+
+- Added `internal/registry` with strict namespaced identifiers, ordered immutable registries, stable derived runtime IDs, resolved tag groups and defensive copies at API boundaries.
+- Added a strict JSON dataset decoder for generated/versioned registry data; unknown fields and trailing JSON are rejected rather than silently ignored.
+- Added graph validation that rejects duplicate registries/entries/tags and tag references to missing entries.
+- Added version-agnostic `Requirements` validation so a protocol version can declare required registries/tags without hard-coding Minecraft 26.2 assumptions into the generic model.
+- Added regression tests that explicitly detect the two real Configuration failure classes already observed: missing `minecraft:damage_type/minecraft:is_fire` and missing `minecraft:worldgen/world_preset`.
+- Reserved `data/26.2` for reproducible generated vanilla data and documented provenance/validation requirements.
+
+### Deliberate non-goals
+
+- No hand-written or partial 26.2 registry payload was added.
+- The existing opaque `registries.go` bootstrap remains in use until a complete authoritative dataset and v776 encoder pass validation and vanilla-client testing.
+- This commit does not guess the complete 26.2 required-registry list. That policy belongs to the version-specific data/protocol layer and must be derived from a trustworthy source rather than crash-by-crash patching.

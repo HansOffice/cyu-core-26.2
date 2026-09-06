@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Format check
+        run: |
+          files="$(gofmt -l .)"
+          # registries.go is a temporary opaque bootstrap payload inherited from
+          # the prototype. It will be deleted when structured registry data lands.
+          files="$(printf '%s\n' "$files" | grep -v '^registries.go$' || true)"
+          if [ -n "$files" ]; then
+            echo "The following files are not gofmt formatted:"
+            echo "$files"
+            exit 1
+          fi
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Race detector
+        run: go test -race ./...

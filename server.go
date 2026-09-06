@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"cyu-core-26.2/internal/runtime/tick"
 )
 
 type Server struct {
@@ -23,6 +25,7 @@ type Server struct {
 	totalPackets atomic.Int64
 	world        *World
 	cmdHandler   *CommandHandler
+	tickLoop     *tick.Loop
 }
 
 func NewServer(configMgr *ConfigManager) *Server {
@@ -32,6 +35,7 @@ func NewServer(configMgr *ConfigManager) *Server {
 		world:     NewWorld(cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ),
 	}
 	s.cmdHandler = NewCommandHandler(s)
+	s.tickLoop = tick.New(tick.DefaultRate, s.tick)
 	return s
 }
 
@@ -48,7 +52,7 @@ func (s *Server) Start() error {
 
 	go s.acceptLoop()
 	go s.keepAliveLoop()
-	go s.timeLoop()
+	s.tickLoop.Start()
 
 	return nil
 }
@@ -57,6 +61,7 @@ func (s *Server) Stop() {
 	if !s.running.Swap(false) {
 		return
 	}
+	s.tickLoop.Stop()
 	s.BroadcastSystemMessage("&c[CyuCore] 服务端正在关闭...")
 	s.players.Range(func(key, value interface{}) bool {
 		if session, ok := value.(*PlayerSession); ok {
@@ -97,7 +102,7 @@ func (s *Server) keepAliveLoop() {
 		payload := buf.Bytes()
 
 		s.players.Range(func(key, value interface{}) bool {
-			if session, ok := value.(*PlayerSession); ok && session.state == StatePlay {
+			if session, ok := value.(*PlayerSession); ok && session.State() == StatePlay {
 				session.SendPacket(PlayPktClientBoundKeepAlive, payload)
 			}
 			return true
@@ -105,15 +110,15 @@ func (s *Server) keepAliveLoop() {
 	}
 }
 
-func (s *Server) timeLoop() {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for s.running.Load() {
-		<-ticker.C
-		age, tod := s.world.AdvanceTime(20)
+func (s *Server) tick() {
+	age, tod := s.world.AdvanceTime(1)
+	if age%tick.DefaultRate == 0 {
 		s.BroadcastPacket(PlayPktClientBoundSetTime, buildSetTime(age, tod))
 	}
+}
+
+func (s *Server) TickMetrics() tick.Snapshot {
+	return s.tickLoop.Snapshot()
 }
 
 func (s *Server) AddPlayer(session *PlayerSession) {
@@ -121,7 +126,7 @@ func (s *Server) AddPlayer(session *PlayerSession) {
 	newPlayerEntity := buildAddPlayerEntity(session.entityID, session.uuid, session.x, session.y, session.z, session.yaw, session.pitch)
 
 	s.players.Range(func(key, value interface{}) bool {
-		if other, ok := value.(*PlayerSession); ok && other.state == StatePlay {
+		if other, ok := value.(*PlayerSession); ok && other.State() == StatePlay {
 			other.SendPacket(PlayPktClientBoundPlayerInfoUpdate, newPlayerInfo)
 			other.SendPacket(PlayPktClientBoundAddEntity, newPlayerEntity)
 
@@ -159,7 +164,7 @@ func (s *Server) RemovePlayer(session *PlayerSession) {
 		removeInfoPayload := buildPlayerInfoRemove(session.uuid)
 
 		s.players.Range(func(key, value interface{}) bool {
-			if other, ok := value.(*PlayerSession); ok && other.state == StatePlay {
+			if other, ok := value.(*PlayerSession); ok && other.State() == StatePlay {
 				other.SendPacket(PlayPktClientBoundRemoveEntities, removeEntityPayload)
 				other.SendPacket(PlayPktClientBoundPlayerInfoUpdate, removeInfoPayload)
 			}
@@ -174,7 +179,7 @@ func (s *Server) RemovePlayer(session *PlayerSession) {
 func (s *Server) BroadcastEntityMove(sender *PlayerSession) {
 	payload := buildEntityPositionSync(sender.entityID, sender.x, sender.y, sender.z, sender.yaw, sender.pitch, sender.onGround)
 	s.players.Range(func(key, value interface{}) bool {
-		if other, ok := value.(*PlayerSession); ok && other != sender && other.state == StatePlay {
+		if other, ok := value.(*PlayerSession); ok && other != sender && other.State() == StatePlay {
 			other.SendPacket(PlayPktClientBoundEntityPositionSync, payload)
 		}
 		return true
@@ -184,7 +189,7 @@ func (s *Server) BroadcastEntityMove(sender *PlayerSession) {
 func (s *Server) BroadcastAnimation(sender *PlayerSession, anim byte) {
 	payload := buildAnimate(sender.entityID, anim)
 	s.players.Range(func(key, value interface{}) bool {
-		if other, ok := value.(*PlayerSession); ok && other != sender && other.state == StatePlay {
+		if other, ok := value.(*PlayerSession); ok && other != sender && other.State() == StatePlay {
 			other.SendPacket(PlayPktClientBoundAnimate, payload)
 		}
 		return true
@@ -194,7 +199,7 @@ func (s *Server) BroadcastAnimation(sender *PlayerSession, anim byte) {
 func (s *Server) BroadcastBlockUpdate(x, y, z int, blockID int) {
 	payload := buildBlockUpdate(x, y, z, blockID)
 	s.players.Range(func(key, value interface{}) bool {
-		if session, ok := value.(*PlayerSession); ok && session.state == StatePlay {
+		if session, ok := value.(*PlayerSession); ok && session.State() == StatePlay {
 			session.SendPacket(PlayPktClientBoundBlockUpdate, payload)
 		}
 		return true
@@ -203,7 +208,7 @@ func (s *Server) BroadcastBlockUpdate(x, y, z int, blockID int) {
 
 func (s *Server) BroadcastPacket(packetID int, payload []byte) {
 	s.players.Range(func(key, value interface{}) bool {
-		if session, ok := value.(*PlayerSession); ok && session.state == StatePlay {
+		if session, ok := value.(*PlayerSession); ok && session.State() == StatePlay {
 			session.SendPacket(packetID, payload)
 		}
 		return true
@@ -227,7 +232,7 @@ func (s *Server) HandlePlayerChat(sender *PlayerSession, message string) {
 func (s *Server) BroadcastSystemMessage(text string) {
 	payload := buildSystemChatMessage(text)
 	s.players.Range(func(key, value interface{}) bool {
-		if session, ok := value.(*PlayerSession); ok && session.state == StatePlay {
+		if session, ok := value.(*PlayerSession); ok && session.State() == StatePlay {
 			session.SendPacket(PlayPktClientBoundSystemChat, payload)
 		}
 		return true
@@ -237,7 +242,7 @@ func (s *Server) BroadcastSystemMessage(text string) {
 func (s *Server) BroadcastMessage(text string, exclude *PlayerSession) {
 	payload := buildSystemChatMessage(text)
 	s.players.Range(func(key, value interface{}) bool {
-		if session, ok := value.(*PlayerSession); ok && session.state == StatePlay {
+		if session, ok := value.(*PlayerSession); ok && session.State() == StatePlay {
 			if exclude == nil || session != exclude {
 				session.SendPacket(PlayPktClientBoundSystemChat, payload)
 			}
@@ -267,7 +272,7 @@ func (s *Server) KickPlayer(name, reason string) bool {
 func (s *Server) ListPlayers() []string {
 	var list []string
 	s.players.Range(func(key, value interface{}) bool {
-		if session, ok := value.(*PlayerSession); ok && session.state == StatePlay {
+		if session, ok := value.(*PlayerSession); ok && session.State() == StatePlay {
 			info := fmt.Sprintf("%s (pos: %.1f, %.1f, %.1f)", session.username, session.x, session.y, session.z)
 			list = append(list, info)
 		}

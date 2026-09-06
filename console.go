@@ -39,17 +39,12 @@ func printServerBanner() {
 	fmt.Println()
 }
 
-func printServerBoot(cfg *ServerConfig) {
-	logInfo("[CyuCore] Starting CyuCore Minecraft 26.2 native server...")
-	time.Sleep(100 * time.Millisecond)
+func printServerBoot(cfg *ServerConfig, startupDuration time.Duration) {
+	logInfo("[CyuCore] CyuCore Minecraft 26.2 native server started")
 	logInfo("[CyuCore] Protocol version: %d (Target: 26.2 / Fluid-Separation Architecture)", ProtocolVersion26_2)
-	time.Sleep(120 * time.Millisecond)
-	logInfo("[CyuCore] Loading dimensions and chunk provider (Spawn: %.1f, %.1f, %.1f)", cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ)
-	time.Sleep(150 * time.Millisecond)
-	logInfo("[CyuCore] Preparing spawn area and safety floating platform: 100%%")
-	time.Sleep(80 * time.Millisecond)
-	logInfo("[CyuCore] Binding TCP game listener on *:%d", cfg.Port)
-	logInfo("[CyuCore] Done (0.642s)! Real clients can now join. For help, type \"help\"")
+	logInfo("[CyuCore] Spawn: %.1f, %.1f, %.1f", cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ)
+	logInfo("[CyuCore] TCP listener bound on *:%d", cfg.Port)
+	logInfo("[CyuCore] Done (%s). For help, type \"help\"", startupDuration.Round(time.Millisecond))
 }
 
 func runConsole(server *Server, stopChan chan struct{}) {
@@ -100,8 +95,13 @@ func runConsole(server *Server, stopChan chan struct{}) {
 				logWarn("用法: kick <player> [reason]")
 			}
 		case "tps":
-			logInfo("TPS from last 1m, 5m, 15m: 20.00, 20.00, 20.00")
-			logInfo("Tick Duration: 0.02ms / 50.0ms (Core Load: 0.04%%)")
+			metrics := server.TickMetrics()
+			if metrics.TPS == 0 {
+				logInfo("TPS: warming up / target %.2f | Ticks: %d", metrics.TargetTPS, metrics.TotalTicks)
+			} else {
+				logInfo("TPS: %.2f / %.2f | Ticks: %d", metrics.TPS, metrics.TargetTPS, metrics.TotalTicks)
+			}
+			logInfo("MSPT: %.3f last / %.3f EWMA | Budget: %.1fms", metrics.LastMSPT, metrics.AverageMSPT, 1000.0/metrics.TargetTPS)
 		case "status":
 			var m runtime.MemStats
 			runtime.ReadMemStats(&m)

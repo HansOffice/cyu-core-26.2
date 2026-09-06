@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-type SessionState int
+type SessionState int32
 
 const (
 	StateHandshake SessionState = 0
@@ -20,6 +20,8 @@ const (
 	StateClosed    SessionState = 5
 )
 
+const outboundQueueCapacity = 128
+
 type PacketOut struct {
 	ID      int
 	Payload []byte
@@ -28,7 +30,7 @@ type PacketOut struct {
 type PlayerSession struct {
 	server       *Server
 	conn         net.Conn
-	state        SessionState
+	state        atomic.Int32
 	entityID     int
 	username     string
 	uuid         [16]byte
@@ -39,18 +41,29 @@ type PlayerSession struct {
 	onGround     bool
 	teleportSeq  int
 	sendChan     chan PacketOut
+	done         chan struct{}
 	closeOnce    atomic.Bool
 	lastPingTime int64
 }
 
 func NewPlayerSession(server *Server, conn net.Conn, entityID int) *PlayerSession {
-	return &PlayerSession{
+	s := &PlayerSession{
 		server:   server,
 		conn:     conn,
-		state:    StateHandshake,
 		entityID: entityID,
-		sendChan: make(chan PacketOut, 128),
+		sendChan: make(chan PacketOut, outboundQueueCapacity),
+		done:     make(chan struct{}),
 	}
+	s.setState(StateHandshake)
+	return s
+}
+
+func (s *PlayerSession) State() SessionState {
+	return SessionState(s.state.Load())
+}
+
+func (s *PlayerSession) setState(state SessionState) {
+	s.state.Store(int32(state))
 }
 
 func (s *PlayerSession) Run() {
@@ -58,13 +71,21 @@ func (s *PlayerSession) Run() {
 	s.readLoop()
 }
 
-func (s *PlayerSession) SendPacket(packetID int, payload []byte) {
-	if s.state == StateClosed {
-		return
+func (s *PlayerSession) SendPacket(packetID int, payload []byte) bool {
+	if s.State() == StateClosed {
+		return false
 	}
+
+	packet := PacketOut{ID: packetID, Payload: payload}
 	select {
-	case s.sendChan <- PacketOut{ID: packetID, Payload: payload}:
+	case <-s.done:
+		return false
+	case s.sendChan <- packet:
+		return true
 	default:
+		logWarn("[network] outbound queue overflow for %s; disconnecting slow client", s.conn.RemoteAddr())
+		s.Close()
+		return false
 	}
 }
 
@@ -84,19 +105,24 @@ func (s *PlayerSession) Teleport(x, y, z float64, yaw, pitch float32) {
 }
 
 func (s *PlayerSession) writeLoop() {
-	for p := range s.sendChan {
-		if err := writePacket(s.conn, p.ID, p.Payload); err != nil {
-			break
+	for {
+		select {
+		case <-s.done:
+			return
+		case p := <-s.sendChan:
+			if err := writePacket(s.conn, p.ID, p.Payload); err != nil {
+				s.Close()
+				return
+			}
 		}
 	}
-	s.Close()
 }
 
 func (s *PlayerSession) Close() {
 	if !s.closeOnce.Swap(true) {
-		s.state = StateClosed
+		s.setState(StateClosed)
+		close(s.done)
 		s.conn.Close()
-		close(s.sendChan)
 		if s.username != "" {
 			s.server.RemovePlayer(s)
 		}
@@ -113,7 +139,7 @@ func (s *PlayerSession) readLoop() {
 			break
 		}
 
-		switch s.state {
+		switch s.State() {
 		case StateHandshake:
 			s.handleHandshake(packetID, payload)
 		case StateStatus:
@@ -144,9 +170,9 @@ func (s *PlayerSession) handleHandshake(packetID int, payload []byte) {
 		s.conn.RemoteAddr().String(), proto, nextState, host, port)
 
 	if nextState == 1 {
-		s.state = StateStatus
+		s.setState(StateStatus)
 	} else if nextState == 2 {
-		s.state = StateLogin
+		s.setState(StateLogin)
 	}
 }
 
@@ -180,7 +206,7 @@ func (s *PlayerSession) handleLogin(packetID int, payload []byte) {
 		logInfo("[登录] 玩家 %s (协议: %d) 请求进入, 下发登录确认帧...", s.username, s.clientProto)
 		s.SendPacket(0x02, buildLoginSuccess(s.clientProto, s.uuid, s.username))
 	} else if packetID == 0x03 {
-		s.state = StateConfig
+		s.setState(StateConfig)
 		s.SendPacket(ConfigPktClientBoundKnownPacks, buildKnownPacks("26.2"))
 	}
 }
@@ -195,7 +221,7 @@ func (s *PlayerSession) handleConfig(packetID int, payload []byte) {
 		s.SendPacket(ConfigPktClientBoundUpdateTags, cachedUpdateTagsPacket)
 		s.SendPacket(ConfigPktClientBoundFinishConfig, []byte{})
 	case ConfigPktServerBoundFinishConfig:
-		s.state = StatePlay
+		s.setState(StatePlay)
 		s.enterPlay()
 	case ConfigPktServerBoundKeepAlive:
 	case ConfigPktServerBoundPong:

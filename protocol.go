@@ -1,104 +1,38 @@
 package main
 
 import (
-	"bytes"
 	"crypto/md5"
 	"fmt"
 	"io"
 	"strings"
+
+	mcproto "cyu-core-26.2/internal/protocol"
 )
 
 func readVarInt(r io.Reader) (int, error) {
-	var val uint32
-	var shift uint
-	for {
-		var b [1]byte
-		if _, err := io.ReadFull(r, b[:]); err != nil {
-			return 0, err
-		}
-		val |= uint32(b[0]&0x7F) << shift
-		if (b[0] & 0x80) == 0 {
-			break
-		}
-		shift += 7
-		if shift >= 35 {
-			return 0, fmt.Errorf("varint exceeds 35 bits")
-		}
-	}
-	return int(int32(val)), nil
+	value, err := mcproto.ReadVarInt(r)
+	return int(value), err
 }
 
 func writeVarInt(val int) []byte {
-	uval := uint32(int32(val))
-	var buf []byte
-	for {
-		b := byte(uval & 0x7F)
-		uval >>= 7
-		if uval != 0 {
-			b |= 0x80
-		}
-		buf = append(buf, b)
-		if uval == 0 {
-			break
-		}
-	}
-	return buf
+	return mcproto.AppendVarInt(nil, int32(val))
 }
 
 func readString(r io.Reader) (string, error) {
-	length, err := readVarInt(r)
-	if err != nil {
-		return "", err
-	}
-	if length < 0 || length > 32767 {
-		return "", fmt.Errorf("invalid string length %d", length)
-	}
-	buf := make([]byte, length)
-	if _, err := io.ReadFull(r, buf); err != nil {
-		return "", err
-	}
-	return string(buf), nil
+	return mcproto.ReadString(r, mcproto.DefaultMaxStringSize)
 }
 
 func writeString(s string) []byte {
-	b := []byte(s)
-	lenBytes := writeVarInt(len(b))
-	return append(lenBytes, b...)
+	return mcproto.AppendString(nil, s)
 }
 
 func readPacket(r io.Reader) (int, []byte, error) {
-	length, err := readVarInt(r)
-	if err != nil {
-		return 0, nil, err
-	}
-	if length <= 0 || length > 2097152 {
-		return 0, nil, fmt.Errorf("invalid packet length %d", length)
-	}
-	raw := make([]byte, length)
-	if _, err := io.ReadFull(r, raw); err != nil {
-		return 0, nil, err
-	}
-	buf := bytes.NewReader(raw)
-	packetID, err := readVarInt(buf)
-	if err != nil {
-		return 0, nil, err
-	}
-	remaining := buf.Len()
-	payload := raw[len(raw)-remaining:]
-	return packetID, payload, nil
+	packetID, payload, err := mcproto.ReadPacket(r, mcproto.DefaultMaxPacketSize)
+	return int(packetID), payload, err
 }
 
 func writePacket(w io.Writer, packetID int, payload []byte) error {
-	idBytes := writeVarInt(packetID)
-	totalLen := len(idBytes) + len(payload)
-	lenBytes := writeVarInt(totalLen)
-
-	var packet []byte
-	packet = append(packet, lenBytes...)
-	packet = append(packet, idBytes...)
-	packet = append(packet, payload...)
-	_, err := w.Write(packet)
-	return err
+	return mcproto.WritePacket(w, int32(packetID), payload, mcproto.DefaultMaxPacketSize)
 }
 
 func makeOfflineUUID(name string) [16]byte {

@@ -43,3 +43,14 @@ The initial prototype successfully exercises a broad vertical slice of Minecraft
 - The tick package is independent of Minecraft protocol/game objects.
 - Networking is still concurrent; this commit does not pretend existing player/session races are solved. Moving authoritative state mutation behind the runtime queue remains a separate migration.
 - World-time packets are broadcast once per 20 ticks to avoid unnecessary network traffic while the authoritative world time advances every tick.
+
+## 2026-09-06 — Continuous integration baseline
+
+### What changed
+
+- Added GitHub Actions CI for every `main`, `feat/**` and pull-request change.
+- CI rejects non-`gofmt` code, runs all tests, runs `go vet`, and executes the race detector.
+
+### Why
+
+The project is entering architectural migration. A server core cannot rely on manual client joins as its only regression test; each small commit now has an automated build-quality gate before more invasive networking and protocol changes are attempted.

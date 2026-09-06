@@ -103,7 +103,7 @@ func TestDecodeDatasetRejectsTagReferenceToMissingEntry(t *testing.T) {
 	}
 }
 
-func TestRequirementsReportKnownConfigurationCrashClasses(t *testing.T) {
+func TestRequirementsReportMissingNodes(t *testing.T) {
 	damageRegistry, err := NewRegistry(id(t, "minecraft:damage_type"), []Entry{{Key: id(t, "minecraft:lava")}})
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestRequirementsReportKnownConfigurationCrashClasses(t *testing.T) {
 	}
 
 	err = set.ValidateRequirements(Requirements{
-		Registries: []Identifier{id(t, "minecraft:worldgen/world_preset")},
+		Registries: []Identifier{id(t, "minecraft:chat_type")},
 		Tags: map[Identifier][]Identifier{
 			id(t, "minecraft:damage_type"): {id(t, "minecraft:is_fire")},
 		},
@@ -124,11 +124,11 @@ func TestRequirementsReportKnownConfigurationCrashClasses(t *testing.T) {
 		t.Fatalf("expected ValidationError, got %v", err)
 	}
 	message := validation.Error()
-	if !strings.Contains(message, "missing registry minecraft:worldgen/world_preset") {
-		t.Fatalf("world preset regression not reported: %s", message)
+	if !strings.Contains(message, "missing registry minecraft:chat_type") {
+		t.Fatalf("missing registry not reported: %s", message)
 	}
 	if !strings.Contains(message, "missing tag minecraft:damage_type/minecraft:is_fire") {
-		t.Fatalf("damage tag regression not reported: %s", message)
+		t.Fatalf("missing tag not reported: %s", message)
 	}
 }
 

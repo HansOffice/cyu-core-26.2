@@ -17,6 +17,16 @@ Every generated dataset added here must document:
 
 Runtime numeric IDs must be derived deterministically from the source ordering. They must not be maintained manually in gameplay code.
 
+A committed generated dataset must include `manifest.json` using CyuCore's datagen manifest schema. The manifest records Minecraft/protocol/data versions, the exact official `server.jar` SHA-256, the datagen command, and SHA-256 hashes for every consumed generated input. Inputs are written in canonical path order so rebuilding the same source data does not create meaningless manifest diffs.
+
+The intended official report command for modern bundled server jars is equivalent to:
+
+```text
+java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports --output generated
+```
+
+The importer treats this command as provenance, not as a runtime dependency: CyuCore does not invoke Java while starting a server.
+
 ## Validation requirements
 
 Before a dataset can replace the prototype `registries.go` bootstrap blob it must, at minimum:

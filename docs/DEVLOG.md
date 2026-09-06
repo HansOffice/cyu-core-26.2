@@ -182,3 +182,17 @@ The first typed-JSON decoder was designed before inspecting the actual generated
 ### Boundary decision
 
 `registries.json` is an authority for registry/entry identity and numeric IDs where those IDs are present. It is not treated as an authority for synchronized Configuration `RegistryData` NBT payloads. Dynamic datapack registries such as `minecraft:worldgen/world_preset` require a separate value-generation path; keeping these responsibilities separate prevents static registry indexing from being mistaken for a complete Configuration dataset.
+
+## 2026-09-07 — Reproducible vanilla-data provenance
+
+### What changed
+
+- Added a versioned datagen manifest schema recording Minecraft version, protocol version, data version, official `server.jar` SHA-256, exact datagen command and SHA-256 hashes for every consumed input.
+- Added strict manifest validation for source kind, version mismatches, lowercase SHA-256 values, duplicate or unsafe input paths and empty generation commands.
+- Added deterministic manifest encoding: input records are canonicalized by path so filesystem traversal order cannot create meaningless diffs.
+- Added a streaming SHA-256 helper for importer inputs.
+- Updated `data/26.2/README.md` to require the manifest for any future checked-in generated dataset and to document the official server datagen invocation used as provenance.
+
+### Why
+
+Generated game data is source code for the runtime even though it is not hand-written Go. CyuCore must be able to prove which official artifact produced a dataset and reproduce the same input set later. Provenance metadata is validated at build/import time and does not add Java or network dependencies to server startup.

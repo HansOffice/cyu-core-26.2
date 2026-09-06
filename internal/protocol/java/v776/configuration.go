@@ -31,7 +31,15 @@ func EncodeRegistryData(reg *registry.Registry) ([]byte, error) {
 	writer := appendWriter{dst: &payload}
 	for _, entry := range reg.Entries() {
 		payload = protocol.AppendString(payload, entry.Key.String())
-		if err := nbt.WriteOptionalNetwork(writer, entry.Data); err != nil {
+		if entry.Data == nil {
+			// RegistrySynchronization.PackedRegistryEntry uses
+			// ByteBufCodecs.TAG.apply(ByteBufCodecs::optional): the optional
+			// wrapper is a boolean, not TAG_End sentinel nullability.
+			payload = append(payload, 0)
+			continue
+		}
+		payload = append(payload, 1)
+		if err := nbt.WriteNetwork(writer, entry.Data); err != nil {
 			return nil, fmt.Errorf("v776: registry %s entry %s: %w", reg.Key(), entry.Key, err)
 		}
 	}

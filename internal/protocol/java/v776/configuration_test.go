@@ -9,7 +9,7 @@ import (
 	"cyu-core-26.2/internal/registry"
 )
 
-func TestEncodeRegistryDataPreservesOrderAndOptionalNBT(t *testing.T) {
+func TestEncodeRegistryDataPreservesOrderAndBooleanOptionalNBT(t *testing.T) {
 	reg, err := registry.NewRegistry(mustID(t, "minecraft:test"), []registry.Entry{
 		{Key: mustID(t, "minecraft:empty")},
 		{Key: mustID(t, "minecraft:value"), Data: nbt.Compound{"x": nbt.Int(1)}},
@@ -25,8 +25,9 @@ func TestEncodeRegistryDataPreservesOrderAndOptionalNBT(t *testing.T) {
 	want := protocol.AppendString(nil, "minecraft:test")
 	want = protocol.AppendVarInt(want, 2)
 	want = protocol.AppendString(want, "minecraft:empty")
-	want = append(want, 0x00)
+	want = append(want, 0x00) // Optional.empty()
 	want = protocol.AppendString(want, "minecraft:value")
+	want = append(want, 0x01) // Optional.of(...)
 	want = append(want, 0x0a, 0x03, 0x00, 0x01, 'x', 0x00, 0x00, 0x00, 0x01, 0x00)
 	if !bytes.Equal(got, want) {
 		t.Fatalf("registry payload mismatch:\nwant %x\n got %x", want, got)

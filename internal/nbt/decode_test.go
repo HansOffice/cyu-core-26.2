@@ -41,8 +41,8 @@ func TestNetworkReadWriteRoundTrip(t *testing.T) {
 
 func TestTypedJSONRoundTrip(t *testing.T) {
 	value := Compound{
-		"long": Long(-1),
-		"list": List{ElementType: LongType, Values: []Value{Long(1), Long(-2)}},
+		"long":  Long(-1),
+		"list":  List{ElementType: LongType, Values: []Value{Long(1), Long(-2)}},
 		"array": LongArray{1, -2},
 		"nested": Compound{
 			"enabled": Byte(1),

@@ -25,10 +25,10 @@ type Version struct {
 // Manifest records enough information to reproduce and audit generated vanilla
 // data. Hashes are SHA-256 over the exact input bytes consumed by the importer.
 type Manifest struct {
-	Schema  int      `json:"schema"`
-	Version Version  `json:"version"`
-	Source  Source   `json:"source"`
-	Inputs  []Input  `json:"inputs"`
+	Schema  int     `json:"schema"`
+	Version Version `json:"version"`
+	Source  Source  `json:"source"`
+	Inputs  []Input `json:"inputs"`
 }
 
 type Source struct {

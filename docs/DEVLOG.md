@@ -54,3 +54,17 @@ The initial prototype successfully exercises a broad vertical slice of Minecraft
 ### Why
 
 The project is entering architectural migration. A server core cannot rely on manual client joins as its only regression test; each small commit now has an automated build-quality gate before more invasive networking and protocol changes are attempted.
+
+## 2026-09-06 — Protocol codec foundation
+
+### What changed
+
+- Added `internal/protocol` for version-independent wire primitives.
+- Implemented bounded VarInt, String and packet framing codecs with explicit malformed/oversized input errors.
+- Made packet writes robust to partial `io.Writer` writes instead of assuming one `Write` flushes an entire packet.
+- Migrated the prototype's root protocol helpers to compatibility wrappers over the new package, preserving current call sites while moving ownership out of `package main`.
+- Added round-trip, malformed VarInt, size-limit and partial-writer tests.
+
+### Why
+
+Binary wire format is a foundational boundary. Future version-specific packet structs can build on one tested codec rather than duplicating byte handling across `buildXXX()` functions. Compatibility wrappers keep this migration small and reversible.

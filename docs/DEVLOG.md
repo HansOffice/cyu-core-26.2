@@ -140,3 +140,17 @@ A post-implementation PR self-review found that the first Stop implementation pu
 ### Why
 
 RegistryData carries optional anonymous NBT. Keeping registry payloads as arbitrary JSON would move type guessing into the wire layer and make values such as `float` versus `double` or `byte` versus `int` depend on decoder accidents. The runtime now owns exact NBT semantics before version-specific packet encoding begins.
+
+## 2026-09-07 — Protocol 776 Configuration registry/tag encoding
+
+### What changed
+
+- Added `internal/protocol/java/v776` as the first explicit Minecraft-version boundary.
+- Implemented clientbound Configuration `RegistryData` payload encoding for protocol 776, preserving registry order as the authoritative runtime-ID order.
+- Implemented Configuration `UpdateTags` payload encoding by translating resolved tag resource keys back to those registry runtime IDs.
+- Added optional anonymous-NBT encoding where `TAG_End` represents an absent RegistryData value; no synthetic boolean is inserted into the wire format.
+- Added byte-level tests for both packet payloads, including the observed `minecraft:damage_type/minecraft:is_fire` shape.
+
+### Constraint
+
+The new v776 encoders are not wired into live sessions yet. The opaque bootstrap remains active until a complete, provenance-pinned 26.2 dataset passes graph validation and the encoded Configuration sequence is verified against a vanilla client. This keeps migration reversible and avoids replacing a known-working bootstrap with incomplete structured data.

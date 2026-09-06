@@ -82,3 +82,17 @@ The first CI run failed before compilation because the prototype's `registries.g
 - The exclusion must be removed in the same migration that removes the opaque registry bootstrap.
 
 This is a documented temporary exception, not a general generated-code exemption.
+
+## 2026-09-06 — Session lifecycle and outbound backpressure
+
+### What changed
+
+- Replaced the unsynchronized `SessionState` field with atomic state accessors used by both session and server goroutines.
+- Added a dedicated session `done` signal; the outbound channel is no longer closed during shutdown, eliminating the `send on closed channel` race class.
+- `SendPacket` now reports success/failure and treats a full outbound queue as a slow-client failure: the session is closed instead of silently discarding a stateful Minecraft packet.
+- Writer shutdown now selects on the lifecycle signal rather than ranging over a channel that other goroutines may still target.
+- Added lifecycle, queue-pressure and concurrent send/close regression tests intended to run under the CI race detector.
+
+### Known remaining concurrency work
+
+Player transform/gameplay fields (`x/y/z`, rotation, on-ground state, game mode and teleport sequence) are still shared between network and server paths. They are intentionally not hidden by ad-hoc atomics here; the next runtime-ownership migration will move these mutations behind a coherent player-state boundary.

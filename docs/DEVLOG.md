@@ -126,3 +126,17 @@ A post-implementation PR self-review found that the first Stop implementation pu
 - No hand-written or partial 26.2 registry payload was added.
 - The existing opaque `registries.go` bootstrap remains in use until a complete authoritative dataset and v776 encoder pass validation and vanilla-client testing.
 - This commit does not guess the complete 26.2 required-registry list. That policy belongs to the version-specific data/protocol layer and must be derived from a trustworthy source rather than crash-by-crash patching.
+
+## 2026-09-07 — Java network NBT and typed registry payloads
+
+### What changed
+
+- Added a standalone Java Edition network-NBT value/encoder layer with deterministic compound output, homogeneous-list validation, exact big-endian primitive encoding and Java Modified UTF-8 strings.
+- Kept NBT independent of Registry and protocol-v776 packages so the same implementation can later serve block entities, item/component data and persistence boundaries.
+- Added a canonical typed-JSON NBT interchange format for generated data. Every numeric value declares its exact NBT type (`byte`, `short`, `int`, `long`, `float`, `double`) instead of relying on JSON number inference.
+- Migrated runtime registry entries from opaque `json.RawMessage` payloads to immutable `nbt.Value` trees with defensive deep copies.
+- Registry dataset decoding now rejects ambiguous untyped payloads before they can reach the network encoder.
+
+### Why
+
+RegistryData carries optional anonymous NBT. Keeping registry payloads as arbitrary JSON would move type guessing into the wire layer and make values such as `float` versus `double` or `byte` versus `int` depend on decoder accidents. The runtime now owns exact NBT semantics before version-specific packet encoding begins.

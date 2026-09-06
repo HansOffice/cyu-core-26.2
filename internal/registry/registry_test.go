@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"cyu-core-26.2/internal/nbt"
 )
 
 func id(t *testing.T, raw string) Identifier {
@@ -35,13 +37,13 @@ func TestParseIdentifier(t *testing.T) {
 	}
 }
 
-func TestDecodeDatasetBuildsStableRegistryIDsAndResolvedTags(t *testing.T) {
+func TestDecodeDatasetBuildsStableRegistryIDsAndTypedNBT(t *testing.T) {
 	const source = `{
 		"registries": [{
 			"key": "minecraft:damage_type",
 			"entries": [
-				{"key": "minecraft:in_fire", "data": {"exhaustion": 0.1}},
-				{"key": "minecraft:lava", "data": {"exhaustion": 0.2}}
+				{"key": "minecraft:in_fire", "data": {"type":"compound","value":{"exhaustion":{"type":"float","value":0.1}}}},
+				{"key": "minecraft:lava", "data": {"type":"compound","value":{"exhaustion":{"type":"float","value":0.2}}}}
 			]
 		}],
 		"tags": [{
@@ -64,10 +66,29 @@ func TestDecodeDatasetBuildsStableRegistryIDsAndResolvedTags(t *testing.T) {
 	if got, ok := registry.EntryID(id(t, "minecraft:lava")); !ok || got != 1 {
 		t.Fatalf("lava ID: got %d, ok=%v", got, ok)
 	}
+	entry, _, _ := registry.Lookup(id(t, "minecraft:in_fire"))
+	compound, ok := entry.Data.(nbt.Compound)
+	if !ok {
+		t.Fatalf("entry data type = %T, want nbt.Compound", entry.Data)
+	}
+	if _, ok := compound["exhaustion"].(nbt.Float); !ok {
+		t.Fatalf("exhaustion type = %T, want nbt.Float", compound["exhaustion"])
+	}
 
 	group, ok := set.Tags(id(t, "minecraft:damage_type"))
 	if !ok || len(group.Tags) != 1 || group.Tags[0].Key != id(t, "minecraft:is_fire") {
 		t.Fatalf("unexpected tag group: %#v", group)
+	}
+}
+
+func TestDecodeDatasetRejectsAmbiguousUntypedNBT(t *testing.T) {
+	const source = `{
+		"registries":[{"key":"minecraft:damage_type","entries":[{"key":"minecraft:lava","data":{"exhaustion":0.1}}]}],
+		"tags":[]
+	}`
+	_, err := DecodeDataset(strings.NewReader(source))
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("expected typed-NBT schema error, got %v", err)
 	}
 }
 
@@ -137,10 +158,10 @@ func TestDatasetRejectsDuplicatesAndUnknownFields(t *testing.T) {
 	})
 }
 
-func TestRegistryReturnsDefensiveDataCopies(t *testing.T) {
+func TestRegistryReturnsDefensiveNBTCopies(t *testing.T) {
 	key := id(t, "minecraft:test")
 	entryKey := id(t, "minecraft:value")
-	registry, err := NewRegistry(key, []Entry{{Key: entryKey, Data: []byte(`{"value":1}`)}})
+	registry, err := NewRegistry(key, []Entry{{Key: entryKey, Data: nbt.Compound{"value": nbt.Int(1)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,9 +170,9 @@ func TestRegistryReturnsDefensiveDataCopies(t *testing.T) {
 	if !ok {
 		t.Fatal("entry missing")
 	}
-	entry.Data[0] = 'x'
+	entry.Data.(nbt.Compound)["value"] = nbt.Int(2)
 	again, _, _ := registry.Lookup(entryKey)
-	if string(again.Data) != `{"value":1}` {
-		t.Fatalf("registry data was mutated through lookup: %s", again.Data)
+	if got := again.Data.(nbt.Compound)["value"].(nbt.Int); got != 1 {
+		t.Fatalf("registry NBT was mutated through lookup: %d", got)
 	}
 }

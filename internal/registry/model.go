@@ -1,10 +1,11 @@
 package registry
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+
+	"cyu-core-26.2/internal/nbt"
 )
 
 // Entry is one ordered value in a registry. Its numeric runtime ID is derived
@@ -12,7 +13,7 @@ import (
 // registry data instead of duplicating an independently mutable ID field.
 type Entry struct {
 	Key  Identifier
-	Data json.RawMessage
+	Data nbt.Value
 }
 
 // Registry is immutable after construction. Entry order is significant.
@@ -75,11 +76,7 @@ func (r *Registry) EntryID(key Identifier) (int32, bool) {
 }
 
 func cloneEntry(entry Entry) Entry {
-	cloned := Entry{Key: entry.Key}
-	if entry.Data != nil {
-		cloned.Data = append(json.RawMessage(nil), entry.Data...)
-	}
-	return cloned
+	return Entry{Key: entry.Key, Data: nbt.Clone(entry.Data)}
 }
 
 // Tag is a resolved tag. Entries are resource locations, not nested tag

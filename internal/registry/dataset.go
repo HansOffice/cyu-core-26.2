@@ -1,9 +1,12 @@
 package registry
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"cyu-core-26.2/internal/nbt"
 )
 
 // Dataset is the stable structured interchange format used by versioned
@@ -61,7 +64,11 @@ func DecodeDataset(r io.Reader) (*Set, error) {
 			if err != nil {
 				return nil, fmt.Errorf("registry dataset: registry %s entry %d: %w", key, entryIndex, err)
 			}
-			entries = append(entries, Entry{Key: entryKey, Data: entryDefinition.Data})
+			data, err := decodeOptionalNBT(entryDefinition.Data)
+			if err != nil {
+				return nil, fmt.Errorf("registry dataset: registry %s entry %s data: %w", key, entryKey, err)
+			}
+			entries = append(entries, Entry{Key: entryKey, Data: data})
 		}
 		registry, err := NewRegistry(key, entries)
 		if err != nil {
@@ -100,4 +107,12 @@ func DecodeDataset(r io.Reader) (*Set, error) {
 		return nil, fmt.Errorf("registry dataset: validate: %w", err)
 	}
 	return set, nil
+}
+
+func decodeOptionalNBT(raw json.RawMessage) (nbt.Value, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, nil
+	}
+	return nbt.DecodeJSON(trimmed)
 }

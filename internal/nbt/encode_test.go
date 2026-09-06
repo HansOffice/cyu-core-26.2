@@ -101,7 +101,7 @@ func TestWriteNetworkRejectsInvalidValues(t *testing.T) {
 
 func TestCloneIsDeep(t *testing.T) {
 	original := Compound{
-		"bytes": ByteArray{1, 2},
+		"bytes":  ByteArray{1, 2},
 		"nested": Compound{"value": Int(3)},
 	}
 	cloned := Clone(original).(Compound)

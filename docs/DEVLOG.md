@@ -261,3 +261,34 @@ There is now one inspectable source of truth for Minecraft 26.2 Configuration da
 ### Remaining architectural work
 
 This completes the Registry/Data foundation, not the Minecraft server as a whole. Player transform/gameplay state still needs single-owner runtime migration, packet handlers still need further versioned typed decoding, and the public Plugin API/loader must be built on those stable ownership boundaries rather than coupled to prototype `package main` structures.
+
+## 2026-09-07 — Tick-owned player and world state
+
+### What changed
+
+- Added `internal/runtime/mailbox`, a multi-producer/single-consumer boundary between concurrent network goroutines and the 20 TPS runtime owner.
+- Ordinary gameplay work is bounded. Queue pressure is explicit: a producer cannot silently lose authoritative state, and a player producing work faster than the runtime can accept is disconnected instead of corrupting server/client state.
+- Critical lifecycle work uses a separate retained queue and drains before ordinary work. Only sessions already published into the runtime player set may enqueue critical removal, so login-stage disconnects cannot grow this queue.
+- Serverbound movement, chat/commands, swing, block break and block placement now decode on the network goroutine and enqueue immutable work. Position, rotation, on-ground state, block state and command-driven world mutations are applied by the tick owner.
+- Introduced `StatePlayPending` and atomic compare-and-swap state transitions. `FinishConfiguration` schedules Play initialization on the runtime owner; a concurrent `Close` wins against `Pending -> Play` and a closed session cannot be resurrected.
+- Added an explicit atomic `registered` publication flag for the runtime player set. Registration uses `LoadOrStore` to reject duplicate usernames without overwriting an existing session, and removal uses `CompareAndDelete` plus idempotent critical cleanup.
+- Split the former monolithic session implementation into `session.go` (connection/lifecycle), `session_login.go` (Handshake/Status/Login/Configuration) and `session_play.go` (Play packet decoding). This is an ownership boundary, not just a file-size cleanup.
+- Converted `World` from internally synchronized fields/maps to ordinary owner-only fields and a Go map. This intentionally makes unauthorized cross-thread access visible to the race detector rather than hiding ownership mistakes behind locks.
+- Added coherent cross-goroutine player snapshots for read-only surfaces such as the console player list. The first pointer-based snapshot design allocated once per movement publication; self-review replaced it with a single-writer atomic seqlock that publishes position/rotation/game-mode/on-ground state with zero heap allocations on the hot path.
+- Added lifecycle, mailbox-pressure, pre-tick movement ownership and zero-allocation snapshot regression tests. The resulting branch passes `gofmt`, `go test ./...`, `go vet ./...` and `go test -race ./...`.
+
+### Ownership invariant
+
+After a session enters Play, authoritative gameplay and world mutation belongs to the runtime owner. Network goroutines may parse and enqueue work; console/network readers may consume explicit snapshots or atomic lifecycle/metrics fields; they must not mutate `PlayerSession` gameplay fields or `World` directly. Future game systems and the Plugin API must preserve this boundary instead of adding local locks to bypass it.
+
+### Pressure and lifecycle semantics
+
+- Ordinary mailbox capacity is intentionally finite and per-server. A full queue is backpressure, not permission to drop a Minecraft action.
+- Critical removal is retained because losing a disconnect can leave ghost players or incorrect online counts. Critical work is restricted to already-registered sessions and remains idempotent.
+- The runtime drains a bounded number of tasks per tick so network floods cannot consume the entire tick budget indefinitely.
+
+### Corrections and deferred work
+
+- The vanilla-data PR verification workflow was later corrected to regenerate the canonical checked-in `data/26.2` paths and use a working-tree diff. The earlier `/tmp` manifest comparison was path-sensitive because the manifest records its exact generation command; the data itself had remained byte-identical.
+- This migration does not yet implement movement validation/collision, teleport confirmation, measured keepalive RTT, graceful disconnect flushing, full entity/world simulation, or a dynamic plugin loader.
+- With runtime ownership now explicit, the next architectural layer may define public Plugin API contracts (lifecycle, events, commands and scheduler) without exposing `PlayerSession`, `net.Conn`, internal maps or protocol-version details.

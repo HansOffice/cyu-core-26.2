@@ -201,13 +201,10 @@ func (s *Server) AddPlayer(session *PlayerSession) {
 	})
 
 	session.SendPacket(PlayPktClientBoundCommands, buildCommandsPacket())
-	age := s.world.worldAge.Load()
-	tod := s.world.timeOfDay.Load()
+	age, tod := s.world.Time()
 	session.SendPacket(PlayPktClientBoundSetTime, buildSetTime(age, tod))
 
-	s.world.modifiedBlocks.Range(func(key, value any) bool {
-		pos := key.(BlockPos)
-		blockID := value.(int)
+	s.world.RangeModifiedBlocks(func(pos BlockPos, blockID int) bool {
 		session.SendPacket(PlayPktClientBoundBlockUpdate, buildBlockUpdate(pos.X, pos.Y, pos.Z, blockID))
 		return true
 	})

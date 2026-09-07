@@ -14,6 +14,8 @@ func NewCommandHandler(server *Server) *CommandHandler {
 	return &CommandHandler{server: server}
 }
 
+// Handle runs on the runtime owner. Command implementations may therefore
+// mutate player/world state directly, but must not perform blocking I/O.
 func (h *CommandHandler) Handle(session *PlayerSession, rawCmd string) {
 	rawCmd = strings.TrimPrefix(rawCmd, "/")
 	parts := strings.Fields(rawCmd)
@@ -92,10 +94,9 @@ func (h *CommandHandler) cmdGameMode(s *PlayerSession, args []string) {
 
 func (h *CommandHandler) cmdTeleport(s *PlayerSession, args []string) {
 	if len(args) == 1 {
-		targetName := args[0]
-		target := h.server.FindPlayer(targetName)
+		target := h.server.FindPlayer(args[0])
 		if target == nil {
-			s.SendSystemMessage(fmt.Sprintf("&c未找到玩家: %s", targetName))
+			s.SendSystemMessage(fmt.Sprintf("&c未找到玩家: %s", args[0]))
 			return
 		}
 		s.Teleport(target.x, target.y, target.z, target.yaw, target.pitch)
@@ -104,10 +105,10 @@ func (h *CommandHandler) cmdTeleport(s *PlayerSession, args []string) {
 	}
 
 	if len(args) == 3 {
-		x, err1 := strconv.ParseFloat(args[0], 64)
-		y, err2 := strconv.ParseFloat(args[1], 64)
-		z, err3 := strconv.ParseFloat(args[2], 64)
-		if err1 != nil || err2 != nil || err3 != nil {
+		x, errX := strconv.ParseFloat(args[0], 64)
+		y, errY := strconv.ParseFloat(args[1], 64)
+		z, errZ := strconv.ParseFloat(args[2], 64)
+		if errX != nil || errY != nil || errZ != nil {
 			s.SendSystemMessage("&c坐标参数必须为合法数字，格式: /tp <x> <y> <z>")
 			return
 		}
@@ -134,7 +135,8 @@ func (h *CommandHandler) cmdTime(s *PlayerSession, args []string) {
 	sub := strings.ToLower(args[0])
 	valStr := strings.ToLower(args[1])
 
-	if sub == "set" {
+	switch sub {
+	case "set":
 		var targetTime int64
 		switch valStr {
 		case "day":
@@ -146,29 +148,29 @@ func (h *CommandHandler) cmdTime(s *PlayerSession, args []string) {
 		case "midnight":
 			targetTime = 18000
 		default:
-			v, err := strconv.ParseInt(valStr, 10, 64)
+			value, err := strconv.ParseInt(valStr, 10, 64)
 			if err != nil {
 				s.SendSystemMessage("&c时间参数必须为数值或预设关键字 (day/noon/night/midnight)")
 				return
 			}
-			targetTime = v
+			targetTime = value
 		}
 
 		h.server.world.SetTimeOfDay(targetTime)
-		age := h.server.world.worldAge.Load()
-		h.server.BroadcastPacket(PlayPktClientBoundSetTime, buildSetTime(age, targetTime%24000))
-		s.SendSystemMessage(fmt.Sprintf("&a已将世界时间设置为 &e%d&a 刻。", targetTime%24000))
-		logInfo("[指令] 玩家 %s 将世界时间设置为 %d 刻", s.username, targetTime%24000)
-	} else if sub == "add" {
-		v, err := strconv.ParseInt(valStr, 10, 64)
-		if err != nil {
-			s.SendSystemMessage("&c增加的时间必须为有效正整数")
+		age, tod := h.server.world.Time()
+		h.server.BroadcastPacket(PlayPktClientBoundSetTime, buildSetTime(age, tod))
+		s.SendSystemMessage(fmt.Sprintf("&a已将世界时间设置为 &e%d&a 刻。", tod))
+		logInfo("[指令] 玩家 %s 将世界时间设置为 %d 刻", s.username, tod)
+	case "add":
+		value, err := strconv.ParseInt(valStr, 10, 64)
+		if err != nil || value < 0 {
+			s.SendSystemMessage("&c增加的时间必须为有效非负整数")
 			return
 		}
-		age, tod := h.server.world.AdvanceTime(v)
+		age, tod := h.server.world.AdvanceTime(value)
 		h.server.BroadcastPacket(PlayPktClientBoundSetTime, buildSetTime(age, tod))
-		s.SendSystemMessage(fmt.Sprintf("&a已向前快进世界时间 &e%d&a 刻 (当前: %d)。", v, tod))
-	} else {
+		s.SendSystemMessage(fmt.Sprintf("&a已向前快进世界时间 &e%d&a 刻 (当前: %d)。", value, tod))
+	default:
 		s.SendSystemMessage("&c用法: /time set <值> 或 /time add <值>")
 	}
 }

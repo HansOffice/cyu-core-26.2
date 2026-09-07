@@ -392,6 +392,7 @@ func (s *Server) BroadcastMessage(text string, exclude *PlayerSession) {
 			if exclude == nil || session != exclude {
 				session.SendPacket(PlayPktClientBoundSystemChat, payload)
 			}
+		}
 		return true
 	})
 }

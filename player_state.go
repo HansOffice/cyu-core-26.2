@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"math"
+	"sync/atomic"
 
 	"cyu-core-26.2/internal/runtime/mailbox"
 )
@@ -19,9 +21,8 @@ type playerMove struct {
 	onGround    bool
 }
 
-// playerSnapshot is the immutable cross-goroutine view of tick-owned gameplay
-// state. The authoritative fields remain on PlayerSession and are mutated only
-// by the runtime owner after Play begins.
+// playerSnapshot is a coherent cross-goroutine view of tick-owned gameplay
+// state. It is a copy, never the authoritative mutable state itself.
 type playerSnapshot struct {
 	gameMode   int
 	x, y, z    float64
@@ -29,18 +30,70 @@ type playerSnapshot struct {
 	onGround   bool
 }
 
+// playerSnapshotStore is a zero-allocation seqlock. The runtime owner is the
+// only writer; readers may run on console/network goroutines. Atomics make the
+// published snapshot coherent without allocating a new object on every move.
+type playerSnapshotStore struct {
+	sequence atomic.Uint64
+	gameMode atomic.Int32
+	x        atomic.Uint64
+	y        atomic.Uint64
+	z        atomic.Uint64
+	yaw      atomic.Uint32
+	pitch    atomic.Uint32
+	onGround atomic.Bool
+}
+
+func (s *playerSnapshotStore) Store(snapshot playerSnapshot) {
+	// Odd sequence means a write is in progress. Go atomics are sequentially
+	// consistent, so readers that observe the same even sequence before and
+	// after their loads have a coherent snapshot.
+	s.sequence.Add(1)
+	s.gameMode.Store(int32(snapshot.gameMode))
+	s.x.Store(math.Float64bits(snapshot.x))
+	s.y.Store(math.Float64bits(snapshot.y))
+	s.z.Store(math.Float64bits(snapshot.z))
+	s.yaw.Store(math.Float32bits(snapshot.yaw))
+	s.pitch.Store(math.Float32bits(snapshot.pitch))
+	s.onGround.Store(snapshot.onGround)
+	s.sequence.Add(1)
+}
+
+func (s *playerSnapshotStore) Load() playerSnapshot {
+	for {
+		start := s.sequence.Load()
+		if start&1 != 0 {
+			continue
+		}
+
+		snapshot := playerSnapshot{
+			gameMode:   int(s.gameMode.Load()),
+			x:          math.Float64frombits(s.x.Load()),
+			y:          math.Float64frombits(s.y.Load()),
+			z:          math.Float64frombits(s.z.Load()),
+			yaw:        math.Float32frombits(s.yaw.Load()),
+			pitch:      math.Float32frombits(s.pitch.Load()),
+			onGround:   s.onGround.Load(),
+		}
+		end := s.sequence.Load()
+		if start == end && end&1 == 0 {
+			return snapshot
+		}
+	}
+}
+
 func (s *PlayerSession) publishPlayerSnapshot() {
 	if s == nil {
 		return
 	}
-	s.playerSnapshot.Store(&playerSnapshot{
-		gameMode: s.gameMode,
-		x:        s.x,
-		y:        s.y,
-		z:        s.z,
-		yaw:      s.yaw,
-		pitch:    s.pitch,
-		onGround: s.onGround,
+	s.playerSnapshot.Store(playerSnapshot{
+		gameMode:   s.gameMode,
+		x:          s.x,
+		y:          s.y,
+		z:          s.z,
+		yaw:        s.yaw,
+		pitch:      s.pitch,
+		onGround:   s.onGround,
 	})
 }
 
@@ -48,10 +101,7 @@ func (s *PlayerSession) readPlayerSnapshot() playerSnapshot {
 	if s == nil {
 		return playerSnapshot{}
 	}
-	if snapshot := s.playerSnapshot.Load(); snapshot != nil {
-		return *snapshot
-	}
-	return playerSnapshot{}
+	return s.playerSnapshot.Load()
 }
 
 func (s *Server) postRuntime(task mailbox.Task) bool {
@@ -81,11 +131,7 @@ func (s *Server) postPlayerRuntime(session *PlayerSession, task func()) bool {
 		return true
 	}
 
-	remote := "unknown"
-	if session.conn != nil && session.conn.RemoteAddr() != nil {
-		remote = session.conn.RemoteAddr().String()
-	}
-	logWarn("[runtime] mailbox overflow for %s; disconnecting client", remote)
+	logWarn("[runtime] mailbox overflow for %s; disconnecting client", session.remoteAddress())
 	session.Close()
 	return false
 }

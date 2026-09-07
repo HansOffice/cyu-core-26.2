@@ -8,8 +8,9 @@ type Task func()
 
 // Queue is a multi-producer, single-consumer mailbox. Ordinary gameplay work is
 // bounded so network pressure cannot consume unbounded memory. Critical
-// lifecycle work is retained in a mutex-protected side queue because dropping a
-// disconnect/removal can leave authoritative state permanently inconsistent.
+// lifecycle work is retained separately because dropping a disconnect/removal
+// can leave authoritative state permanently inconsistent. Callers are expected
+// to reserve critical work for already-published runtime objects.
 type Queue struct {
 	tasks chan Task
 
@@ -83,6 +84,11 @@ func (q *Queue) popCritical() Task {
 	defer q.criticalMu.Unlock()
 	if len(q.critical) == 0 {
 		return nil
+	}
+	if len(q.critical) == 1 {
+		task := q.critical[0]
+		q.critical = nil
+		return task
 	}
 	task := q.critical[0]
 	q.critical[0] = nil

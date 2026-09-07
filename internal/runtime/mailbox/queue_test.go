@@ -2,64 +2,59 @@ package mailbox
 
 import "testing"
 
-func TestQueueDrainsFIFOWithLimit(t *testing.T) {
-	q := New(4)
-	got := make([]int, 0, 3)
+func TestQueuePopsFIFO(t *testing.T) {
+	q := New[int](4)
 	for i := 1; i <= 3; i++ {
-		value := i
-		if !q.TryPost(func() { got = append(got, value) }) {
+		if !q.TryPost(i) {
 			t.Fatalf("post %d rejected", i)
 		}
 	}
 
-	if drained := q.Drain(2); drained != 2 {
-		t.Fatalf("first drain = %d, want 2", drained)
+	for want := 1; want <= 3; want++ {
+		got, ok := q.TryPop()
+		if !ok {
+			t.Fatalf("pop %d reported empty", want)
+		}
+		if got != want {
+			t.Fatalf("pop = %d, want %d", got, want)
+		}
 	}
-	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
-		t.Fatalf("first drain order = %v, want [1 2]", got)
-	}
-	if q.Len() != 1 {
-		t.Fatalf("queue len = %d, want 1", q.Len())
-	}
-
-	if drained := q.Drain(4); drained != 1 {
-		t.Fatalf("second drain = %d, want 1", drained)
-	}
-	if len(got) != 3 || got[2] != 3 {
-		t.Fatalf("final drain order = %v, want [1 2 3]", got)
+	if _, ok := q.TryPop(); ok {
+		t.Fatal("empty queue returned a value")
 	}
 }
 
-func TestCriticalTasksSurviveOrdinaryPressureAndRunFirst(t *testing.T) {
-	q := New(1)
-	got := make([]string, 0, 2)
-	if !q.TryPost(func() { got = append(got, "ordinary") }) {
+func TestCriticalValuesSurviveOrdinaryPressureAndPopFirst(t *testing.T) {
+	q := New[string](1)
+	if !q.TryPost("ordinary") {
 		t.Fatal("ordinary post rejected")
 	}
-	if q.TryPost(func() {}) {
+	if q.TryPost("overflow") {
 		t.Fatal("ordinary queue should be full")
 	}
-	if !q.PostCritical(func() { got = append(got, "critical") }) {
+	if !q.PostCritical("critical") {
 		t.Fatal("critical post rejected")
 	}
 	if q.CriticalLen() != 1 {
 		t.Fatalf("critical len = %d, want 1", q.CriticalLen())
 	}
 
-	if drained := q.Drain(2); drained != 2 {
-		t.Fatalf("drained = %d, want 2", drained)
+	got, ok := q.TryPop()
+	if !ok || got != "critical" {
+		t.Fatalf("first pop = %q, %v; want critical, true", got, ok)
 	}
-	if len(got) != 2 || got[0] != "critical" || got[1] != "ordinary" {
-		t.Fatalf("drain order = %v, want [critical ordinary]", got)
+	got, ok = q.TryPop()
+	if !ok || got != "ordinary" {
+		t.Fatalf("second pop = %q, %v; want ordinary, true", got, ok)
 	}
 }
 
 func TestQueuePressureIsExplicit(t *testing.T) {
-	q := New(1)
-	if !q.TryPost(func() {}) {
+	q := New[int](1)
+	if !q.TryPost(1) {
 		t.Fatal("first post rejected")
 	}
-	if q.TryPost(func() {}) {
+	if q.TryPost(2) {
 		t.Fatal("second post should be rejected when queue is full")
 	}
 	if q.Len() != 1 || q.Cap() != 1 {
@@ -67,15 +62,18 @@ func TestQueuePressureIsExplicit(t *testing.T) {
 	}
 }
 
-func TestQueueRejectsNilTask(t *testing.T) {
-	q := New(1)
-	if q.TryPost(nil) {
-		t.Fatal("nil ordinary task should be rejected")
+func TestNilQueueIsSafe(t *testing.T) {
+	var q *Queue[int]
+	if q.TryPost(1) {
+		t.Fatal("nil queue accepted ordinary value")
 	}
-	if q.PostCritical(nil) {
-		t.Fatal("nil critical task should be rejected")
+	if q.PostCritical(1) {
+		t.Fatal("nil queue accepted critical value")
 	}
-	if drained := q.Drain(1); drained != 0 {
-		t.Fatalf("drained nil task count = %d, want 0", drained)
+	if _, ok := q.TryPop(); ok {
+		t.Fatal("nil queue returned a value")
+	}
+	if q.Len() != 0 || q.CriticalLen() != 0 || q.Cap() != 0 {
+		t.Fatal("nil queue reported non-zero metadata")
 	}
 }

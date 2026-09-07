@@ -27,7 +27,7 @@ type Server struct {
 	totalPackets   atomic.Int64
 	world          *World
 	cmdHandler     *CommandHandler
-	runtimeMailbox *mailbox.Queue
+	runtimeMailbox *mailbox.Queue[runtimeEvent]
 	tickLoop       *tick.Loop
 }
 
@@ -44,7 +44,7 @@ func NewServer(configMgr *ConfigManager, configuration *vanillaConfiguration) (*
 		configMgr:      configMgr,
 		configuration:  configuration,
 		world:          NewWorld(cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ),
-		runtimeMailbox: mailbox.New(runtimeMailboxCapacity),
+		runtimeMailbox: mailbox.New[runtimeEvent](runtimeMailboxCapacity),
 	}
 	s.cmdHandler = NewCommandHandler(s)
 	s.tickLoop = tick.New(tick.DefaultRate, s.tick)
@@ -123,7 +123,7 @@ func (s *Server) keepAliveLoop() {
 }
 
 func (s *Server) tick() {
-	s.runtimeMailbox.Drain(maxRuntimeTasksPerTick)
+	s.drainRuntimeEvents(maxRuntimeTasksPerTick)
 
 	age, tod := s.world.AdvanceTime(1)
 	if age%tick.DefaultRate == 0 {
@@ -220,7 +220,7 @@ func (s *Server) RemovePlayer(session *PlayerSession) {
 		return
 	}
 	if s.tickLoop != nil && s.tickLoop.Running() {
-		if s.postRuntimeCritical(func() { s.removePlayerOwned(session) }) {
+		if s.postRuntimeCritical(runtimeEvent{kind: runtimeEventRemovePlayer, session: session}) {
 			return
 		}
 	}

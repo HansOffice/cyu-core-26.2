@@ -15,10 +15,11 @@ func TestMovementDoesNotMutateAuthoritativeStateBeforeTick(t *testing.T) {
 
 	server := &Server{
 		world:          NewWorld(8, 65, 8),
-		runtimeMailbox: mailbox.New(8),
+		runtimeMailbox: mailbox.New[runtimeEvent](8),
 	}
 	session := NewPlayerSession(server, serverConn, 1)
 	session.setState(StatePlay)
+	session.registered.Store(true)
 	session.x, session.y, session.z = 1, 70, 3
 	session.publishPlayerSnapshot()
 
@@ -82,5 +83,28 @@ func TestPlayerSnapshotPublicationDoesNotAllocate(t *testing.T) {
 	})
 	if allocs != 0 {
 		t.Fatalf("snapshot publish/read allocations = %.2f, want 0", allocs)
+	}
+}
+
+func TestMovementMailboxHandoffDoesNotAllocate(t *testing.T) {
+	server := &Server{runtimeMailbox: mailbox.New[runtimeEvent](1)}
+	session := &PlayerSession{}
+	session.setState(StatePlay)
+	event := runtimeEvent{
+		kind:    runtimeEventPlayerMove,
+		session: session,
+		move:    playerMove{hasPosition: true, x: 1, y: 2, z: 3, onGround: true},
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		if !server.postPlayerRuntime(event) {
+			panic("movement event rejected")
+		}
+		if _, ok := server.runtimeMailbox.TryPop(); !ok {
+			panic("movement event missing")
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("movement mailbox handoff allocations = %.2f, want 0", allocs)
 	}
 }

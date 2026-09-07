@@ -21,7 +21,7 @@ func TestClosedSessionCannotPublishPlay(t *testing.T) {
 }
 
 func TestPrePlayCloseDoesNotCreateLifecycleWork(t *testing.T) {
-	server := &Server{runtimeMailbox: mailbox.New(4)}
+	server := &Server{runtimeMailbox: mailbox.New[runtimeEvent](4)}
 	session := NewPlayerSession(server, nil, 1)
 	session.username = "before-play"
 	session.setState(StatePlayPending)
@@ -29,7 +29,7 @@ func TestPrePlayCloseDoesNotCreateLifecycleWork(t *testing.T) {
 	session.Close()
 
 	if got := server.runtimeMailbox.CriticalLen(); got != 0 {
-		t.Fatalf("critical lifecycle tasks = %d, want 0", got)
+		t.Fatalf("critical lifecycle events = %d, want 0", got)
 	}
 	if session.registered.Load() {
 		t.Fatal("pre-play session became registered")
@@ -37,7 +37,7 @@ func TestPrePlayCloseDoesNotCreateLifecycleWork(t *testing.T) {
 }
 
 func TestRegisteredCloseIsSerializedThroughCriticalMailbox(t *testing.T) {
-	server := &Server{runtimeMailbox: mailbox.New(4)}
+	server := &Server{runtimeMailbox: mailbox.New[runtimeEvent](4)}
 	server.tickLoop = tick.New(tick.DefaultRate, func() {})
 	if !server.tickLoop.Start() {
 		t.Fatal("tick loop did not start")
@@ -57,10 +57,10 @@ func TestRegisteredCloseIsSerializedThroughCriticalMailbox(t *testing.T) {
 		t.Fatal("network close mutated player map before runtime owner drained lifecycle work")
 	}
 	if got := server.runtimeMailbox.CriticalLen(); got != 1 {
-		t.Fatalf("critical lifecycle tasks = %d, want 1", got)
+		t.Fatalf("critical lifecycle events = %d, want 1", got)
 	}
 
-	if drained := server.runtimeMailbox.Drain(1); drained != 1 {
+	if drained := server.drainRuntimeEvents(1); drained != 1 {
 		t.Fatalf("drained = %d, want 1", drained)
 	}
 	if _, ok := server.players.Load("registered"); ok {

@@ -20,7 +20,7 @@ func (s *PlayerSession) handlePlay(packetID int, payload []byte) {
 			!readMoveGrounded(buf, &move) {
 			return
 		}
-		s.server.postPlayerRuntime(s, func() { s.server.applyPlayerMove(s, move) })
+		s.server.postPlayerRuntime(runtimeEvent{kind: runtimeEventPlayerMove, session: s, move: move})
 	case PlayPktServerBoundMovePosRot:
 		buf := bytes.NewReader(payload)
 		move := playerMove{hasPosition: true, hasRotation: true}
@@ -32,7 +32,7 @@ func (s *PlayerSession) handlePlay(packetID int, payload []byte) {
 			!readMoveGrounded(buf, &move) {
 			return
 		}
-		s.server.postPlayerRuntime(s, func() { s.server.applyPlayerMove(s, move) })
+		s.server.postPlayerRuntime(runtimeEvent{kind: runtimeEventPlayerMove, session: s, move: move})
 	case PlayPktServerBoundMoveRot:
 		buf := bytes.NewReader(payload)
 		move := playerMove{hasRotation: true}
@@ -41,29 +41,28 @@ func (s *PlayerSession) handlePlay(packetID int, payload []byte) {
 			!readMoveGrounded(buf, &move) {
 			return
 		}
-		s.server.postPlayerRuntime(s, func() { s.server.applyPlayerMove(s, move) })
+		s.server.postPlayerRuntime(runtimeEvent{kind: runtimeEventPlayerMove, session: s, move: move})
 	case PlayPktServerBoundMoveStatus:
 		buf := bytes.NewReader(payload)
 		var move playerMove
 		if !readMoveGrounded(buf, &move) {
 			return
 		}
-		s.server.postPlayerRuntime(s, func() { s.server.applyPlayerMove(s, move) })
+		s.server.postPlayerRuntime(runtimeEvent{kind: runtimeEventPlayerMove, session: s, move: move})
 	case PlayPktServerBoundChat:
 		buf := bytes.NewReader(payload)
 		msg, err := readString(buf)
 		if err == nil && msg != "" {
-			s.server.postPlayerRuntime(s, func() { s.server.HandlePlayerChat(s, msg) })
+			s.server.postPlayerRuntime(runtimeEvent{kind: runtimeEventPlayerChat, session: s, text: msg})
 		}
 	case PlayPktServerBoundChatCommand:
 		buf := bytes.NewReader(payload)
 		cmd, err := readString(buf)
 		if err == nil && cmd != "" {
-			message := "/" + cmd
-			s.server.postPlayerRuntime(s, func() { s.server.HandlePlayerChat(s, message) })
+			s.server.postPlayerRuntime(runtimeEvent{kind: runtimeEventPlayerChat, session: s, text: "/" + cmd})
 		}
 	case PlayPktServerBoundSwing:
-		s.server.postPlayerRuntime(s, func() { s.server.BroadcastAnimation(s, 0) })
+		s.server.postPlayerRuntime(runtimeEvent{kind: runtimeEventPlayerAnimation, session: s, animation: 0})
 	case PlayPktServerBoundPlayerAction:
 		s.handlePlayerAction(payload)
 	case PlayPktServerBoundUseItemOn:
@@ -100,12 +99,13 @@ func (s *PlayerSession) handlePlayerAction(payload []byte) {
 	}
 
 	x, y, z := unpackPosition(posVal)
-	s.server.postPlayerRuntime(s, func() {
-		s.server.world.SetBlock(x, y, z, BlockAir)
-		s.server.BroadcastBlockUpdate(x, y, z, BlockAir)
-		if seq >= 0 {
-			s.SendPacket(PlayPktClientBoundBlockChangedAck, buildBlockChangedAck(seq))
-		}
+	s.server.postPlayerRuntime(runtimeEvent{
+		kind:     runtimeEventBreakBlock,
+		session:  s,
+		x:        x,
+		y:        y,
+		z:        z,
+		sequence: seq,
 	})
 }
 
@@ -162,12 +162,13 @@ func (s *PlayerSession) handleUseItemOn(payload []byte) {
 		return
 	}
 
-	s.server.postPlayerRuntime(s, func() {
-		blockID := BlockStoneBricks
-		s.server.world.SetBlock(tx, ty, tz, blockID)
-		s.server.BroadcastBlockUpdate(tx, ty, tz, blockID)
-		if seq >= 0 {
-			s.SendPacket(PlayPktClientBoundBlockChangedAck, buildBlockChangedAck(seq))
-		}
+	s.server.postPlayerRuntime(runtimeEvent{
+		kind:     runtimeEventPlaceBlock,
+		session:  s,
+		x:        tx,
+		y:        ty,
+		z:        tz,
+		blockID:  BlockStoneBricks,
+		sequence: seq,
 	})
 }

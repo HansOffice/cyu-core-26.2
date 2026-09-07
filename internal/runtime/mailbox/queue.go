@@ -2,38 +2,36 @@ package mailbox
 
 import "sync"
 
-// Task is one unit of state mutation that must execute on the runtime owner
-// goroutine. Tasks must not block on network or disk I/O.
-type Task func()
-
-// Queue is a multi-producer, single-consumer mailbox. Ordinary gameplay work is
-// bounded so network pressure cannot consume unbounded memory. Critical
-// lifecycle work is retained separately because dropping a disconnect/removal
-// can leave authoritative state permanently inconsistent. Callers are expected
-// to reserve critical work for already-published runtime objects.
-type Queue struct {
-	tasks chan Task
+// Queue is a generic multi-producer, single-consumer mailbox. Ordinary values
+// are bounded so producer pressure cannot consume unbounded memory. Critical
+// values are retained separately because lifecycle work must not be dropped.
+//
+// Queue deliberately stores values rather than callbacks. Runtime ownership is
+// therefore explicit at the consumer boundary and hot paths do not need a heap-
+// escaping closure for every event.
+type Queue[T any] struct {
+	values chan T
 
 	criticalMu sync.Mutex
-	critical   []Task
+	critical   []T
 }
 
-func New(capacity int) *Queue {
+func New[T any](capacity int) *Queue[T] {
 	if capacity <= 0 {
 		panic("mailbox: capacity must be positive")
 	}
-	return &Queue{tasks: make(chan Task, capacity)}
+	return &Queue[T]{values: make(chan T, capacity)}
 }
 
 // TryPost enqueues ordinary work without blocking. Queue pressure is explicit
-// so callers can disconnect or reject work instead of silently losing
-// authoritative state.
-func (q *Queue) TryPost(task Task) bool {
-	if q == nil || task == nil {
+// so callers can reject work or disconnect a producer instead of silently
+// losing authoritative state.
+func (q *Queue[T]) TryPost(value T) bool {
+	if q == nil {
 		return false
 	}
 	select {
-	case q.tasks <- task:
+	case q.values <- value:
 		return true
 	default:
 		return false
@@ -41,69 +39,61 @@ func (q *Queue) TryPost(task Task) bool {
 }
 
 // PostCritical retains lifecycle work even when the ordinary bounded queue is
-// full. Critical tasks are executed before ordinary tasks on the next Drain.
-func (q *Queue) PostCritical(task Task) bool {
-	if q == nil || task == nil {
+// full. Critical values are returned before ordinary values by TryPop.
+func (q *Queue[T]) PostCritical(value T) bool {
+	if q == nil {
 		return false
 	}
 	q.criticalMu.Lock()
-	q.critical = append(q.critical, task)
+	q.critical = append(q.critical, value)
 	q.criticalMu.Unlock()
 	return true
 }
 
-// Drain executes up to limit tasks. Critical lifecycle tasks have priority;
-// ordinary tasks preserve channel FIFO order. Drain never blocks waiting for
-// work and must have exactly one consumer.
-func (q *Queue) Drain(limit int) int {
-	if q == nil || limit <= 0 {
-		return 0
+// TryPop returns one value without blocking. Critical lifecycle values have
+// priority; ordinary values preserve channel FIFO order. Exactly one goroutine
+// must consume from a Queue.
+func (q *Queue[T]) TryPop() (T, bool) {
+	var zero T
+	if q == nil {
+		return zero, false
 	}
-
-	drained := 0
-	for drained < limit {
-		if task := q.popCritical(); task != nil {
-			task()
-			drained++
-			continue
-		}
-
-		select {
-		case task := <-q.tasks:
-			task()
-			drained++
-		default:
-			return drained
-		}
+	if value, ok := q.popCritical(); ok {
+		return value, true
 	}
-	return drained
+	select {
+	case value := <-q.values:
+		return value, true
+	default:
+		return zero, false
+	}
 }
 
-func (q *Queue) popCritical() Task {
+func (q *Queue[T]) popCritical() (T, bool) {
+	var zero T
 	q.criticalMu.Lock()
 	defer q.criticalMu.Unlock()
 	if len(q.critical) == 0 {
-		return nil
+		return zero, false
 	}
+	value := q.critical[0]
+	q.critical[0] = zero
 	if len(q.critical) == 1 {
-		task := q.critical[0]
 		q.critical = nil
-		return task
+	} else {
+		q.critical = q.critical[1:]
 	}
-	task := q.critical[0]
-	q.critical[0] = nil
-	q.critical = q.critical[1:]
-	return task
+	return value, true
 }
 
-func (q *Queue) Len() int {
+func (q *Queue[T]) Len() int {
 	if q == nil {
 		return 0
 	}
-	return len(q.tasks)
+	return len(q.values)
 }
 
-func (q *Queue) CriticalLen() int {
+func (q *Queue[T]) CriticalLen() int {
 	if q == nil {
 		return 0
 	}
@@ -112,9 +102,9 @@ func (q *Queue) CriticalLen() int {
 	return len(q.critical)
 }
 
-func (q *Queue) Cap() int {
+func (q *Queue[T]) Cap() int {
 	if q == nil {
 		return 0
 	}
-	return cap(q.tasks)
+	return cap(q.values)
 }

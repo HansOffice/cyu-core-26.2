@@ -4,13 +4,24 @@ import (
 	"fmt"
 	"math"
 	"sync/atomic"
-
-	"cyu-core-26.2/internal/runtime/mailbox"
 )
 
 const (
 	runtimeMailboxCapacity = 4096
 	maxRuntimeTasksPerTick = 1024
+)
+
+type runtimeEventKind uint8
+
+const (
+	runtimeEventInvalid runtimeEventKind = iota
+	runtimeEventEnterPlay
+	runtimeEventRemovePlayer
+	runtimeEventPlayerMove
+	runtimeEventPlayerChat
+	runtimeEventPlayerAnimation
+	runtimeEventBreakBlock
+	runtimeEventPlaceBlock
 )
 
 type playerMove struct {
@@ -19,6 +30,20 @@ type playerMove struct {
 	x, y, z     float64
 	yaw, pitch  float32
 	onGround    bool
+}
+
+// runtimeEvent is the value-only handoff from concurrent producers to the
+// single runtime owner. Keep it data-only: protocol/network goroutines decode
+// packets into events, while the tick owner decides how state changes.
+type runtimeEvent struct {
+	kind      runtimeEventKind
+	session   *PlayerSession
+	move      playerMove
+	text      string
+	animation byte
+	x, y, z   int
+	blockID   int
+	sequence  int
 }
 
 // playerSnapshot is a coherent cross-goroutine view of tick-owned gameplay
@@ -104,40 +129,96 @@ func (s *PlayerSession) readPlayerSnapshot() playerSnapshot {
 	return s.playerSnapshot.Load()
 }
 
-func (s *Server) postRuntime(task mailbox.Task) bool {
-	if s == nil || s.runtimeMailbox == nil {
+func (s *Server) postRuntimeEvent(event runtimeEvent) bool {
+	if s == nil || s.runtimeMailbox == nil || event.kind == runtimeEventInvalid {
 		return false
 	}
-	return s.runtimeMailbox.TryPost(task)
+	return s.runtimeMailbox.TryPost(event)
 }
 
-func (s *Server) postRuntimeCritical(task mailbox.Task) bool {
-	if s == nil || s.runtimeMailbox == nil {
+func (s *Server) postRuntimeCritical(event runtimeEvent) bool {
+	if s == nil || s.runtimeMailbox == nil || event.kind == runtimeEventInvalid {
 		return false
 	}
-	return s.runtimeMailbox.PostCritical(task)
+	return s.runtimeMailbox.PostCritical(event)
 }
 
-func (s *Server) postPlayerRuntime(session *PlayerSession, task func()) bool {
-	if session == nil || task == nil {
+func (s *Server) postPlayerRuntime(event runtimeEvent) bool {
+	if event.session == nil || event.session.State() != StatePlay || event.kind == runtimeEventInvalid {
 		return false
 	}
-	if s.postRuntime(func() {
-		if session.State() != StatePlay {
-			return
-		}
-		task()
-	}) {
+	if s.postRuntimeEvent(event) {
 		return true
 	}
 
-	logWarn("[runtime] mailbox overflow for %s; disconnecting client", session.remoteAddress())
-	session.Close()
+	logWarn("[runtime] mailbox overflow for %s; disconnecting client", event.session.remoteAddress())
+	event.session.Close()
 	return false
 }
 
+func (s *Server) drainRuntimeEvents(limit int) int {
+	if s == nil || s.runtimeMailbox == nil || limit <= 0 {
+		return 0
+	}
+	drained := 0
+	for drained < limit {
+		event, ok := s.runtimeMailbox.TryPop()
+		if !ok {
+			break
+		}
+		s.applyRuntimeEvent(event)
+		drained++
+	}
+	return drained
+}
+
+func (s *Server) applyRuntimeEvent(event runtimeEvent) {
+	switch event.kind {
+	case runtimeEventEnterPlay:
+		if event.session != nil {
+			event.session.enterPlay()
+		}
+	case runtimeEventRemovePlayer:
+		s.removePlayerOwned(event.session)
+	case runtimeEventPlayerMove:
+		if s.runtimePlayerActive(event.session) {
+			s.applyPlayerMove(event.session, event.move)
+		}
+	case runtimeEventPlayerChat:
+		if s.runtimePlayerActive(event.session) {
+			s.HandlePlayerChat(event.session, event.text)
+		}
+	case runtimeEventPlayerAnimation:
+		if s.runtimePlayerActive(event.session) {
+			s.BroadcastAnimation(event.session, event.animation)
+		}
+	case runtimeEventBreakBlock:
+		if s.runtimePlayerActive(event.session) {
+			s.world.SetBlock(event.x, event.y, event.z, BlockAir)
+			s.BroadcastBlockUpdate(event.x, event.y, event.z, BlockAir)
+			s.ackBlockChange(event.session, event.sequence)
+		}
+	case runtimeEventPlaceBlock:
+		if s.runtimePlayerActive(event.session) {
+			s.world.SetBlock(event.x, event.y, event.z, event.blockID)
+			s.BroadcastBlockUpdate(event.x, event.y, event.z, event.blockID)
+			s.ackBlockChange(event.session, event.sequence)
+		}
+	}
+}
+
+func (s *Server) runtimePlayerActive(session *PlayerSession) bool {
+	return session != nil && session.State() == StatePlay && session.registered.Load()
+}
+
+func (s *Server) ackBlockChange(session *PlayerSession, sequence int) {
+	if sequence >= 0 {
+		session.SendPacket(PlayPktClientBoundBlockChangedAck, buildBlockChangedAck(sequence))
+	}
+}
+
 func (s *Server) applyPlayerMove(session *PlayerSession, move playerMove) {
-	if session == nil || session.State() != StatePlay {
+	if !s.runtimePlayerActive(session) {
 		return
 	}
 	if move.hasPosition {

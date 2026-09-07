@@ -107,9 +107,7 @@ func (s *PlayerSession) handleConfig(packetID int, payload []byte) {
 		if !s.transitionState(StateConfig, StatePlayPending) {
 			return
 		}
-		if !s.server.postRuntime(func() {
-			s.enterPlay()
-		}) {
+		if !s.server.postRuntimeEvent(runtimeEvent{kind: runtimeEventEnterPlay, session: s}) {
 			logWarn("[runtime] unable to enqueue Play initialization for %s", s.remoteAddress())
 			s.Close()
 		}

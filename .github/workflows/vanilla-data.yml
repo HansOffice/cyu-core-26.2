@@ -107,11 +107,10 @@ jobs:
           go run ./cmd/vanilla-capture \
             -addr 127.0.0.1:25565 \
             -reports generated/reports/registries.json \
-            -out /tmp/registry-set.json \
-            -manifest /tmp/manifest.json \
+            -out data/26.2/registry-set.json \
+            -manifest data/26.2/manifest.json \
             -server-jar-sha256 "$SERVER_JAR_SHA256"
-          cmp --silent /tmp/registry-set.json data/26.2/registry-set.json
-          cmp --silent /tmp/manifest.json data/26.2/manifest.json
+          git diff --exit-code -- data/26.2/registry-set.json data/26.2/manifest.json
 
       - name: Validate checked-in dataset
         run: go test ./...
@@ -124,8 +123,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
           path: |
-            /tmp/registry-set.json
-            /tmp/manifest.json
+            data/26.2/registry-set.json
+            data/26.2/manifest.json
             generated/reports/registries.json
             generated/reports/datapack.json
             vanilla/server.log

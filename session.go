@@ -39,7 +39,7 @@ type PlayerSession struct {
 	yaw, pitch        float32
 	onGround          bool
 	teleportSeq       int
-	playerSnapshot    atomic.Pointer[playerSnapshot]
+	playerSnapshot    playerSnapshotStore
 	registered        atomic.Bool
 	sendChan          chan PacketOut
 	done              chan struct{}

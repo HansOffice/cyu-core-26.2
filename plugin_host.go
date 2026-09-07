@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	commandapi "cyu-core-26.2/api/command"
 	eventapi "cyu-core-26.2/api/event"
 	playerapi "cyu-core-26.2/api/player"
 	pluginapi "cyu-core-26.2/api/plugin"
@@ -10,6 +11,19 @@ import (
 )
 
 const maxPluginTasksPerTick = 256
+
+var coreReservedPluginCommands = []commandapi.Name{
+	"help",
+	"gamemode",
+	"gm",
+	"tp",
+	"teleport",
+	"spawn",
+	"time",
+	"say",
+	"ping",
+	"clear",
+}
 
 // RegisterPlugin is a host-side registration boundary used by future loaders
 // and built-in integration tests. Plugins themselves never receive *Server.
@@ -45,6 +59,24 @@ func (s *Server) runPluginScheduler() {
 	}
 }
 
+func (s *Server) executePluginCommand(session *PlayerSession, name string, args []string) bool {
+	if s == nil || s.plugins == nil || session == nil {
+		return false
+	}
+	commandName, err := commandapi.ParseName(name)
+	if err != nil {
+		return false
+	}
+
+	handled, err := s.plugins.ExecuteCommand(commandName, args, playerPluginCommandSource{server: s, session: session})
+	if err != nil {
+		logWarn("[plugin] command %s failed: %v", commandName, err)
+		session.SendSystemMessage("&c插件命令执行失败，请查看服务端日志。")
+		return true
+	}
+	return handled
+}
+
 func (s *Server) pluginPlayerSnapshot(session *PlayerSession) playerapi.Snapshot {
 	if session == nil {
 		return playerapi.Snapshot{}
@@ -65,6 +97,26 @@ func (s *Server) pluginPlayerSnapshot(session *PlayerSession) playerapi.Snapshot
 	}
 }
 
+type playerPluginCommandSource struct {
+	server  *Server
+	session *PlayerSession
+}
+
+func (playerPluginCommandSource) Kind() commandapi.SourceKind { return commandapi.SourcePlayer }
+
+func (s playerPluginCommandSource) Player() (playerapi.Snapshot, bool) {
+	if s.server == nil || s.session == nil {
+		return playerapi.Snapshot{}, false
+	}
+	return s.server.pluginPlayerSnapshot(s.session), true
+}
+
+func (s playerPluginCommandSource) Reply(message string) {
+	if s.session != nil {
+		s.session.SendSystemMessage(message)
+	}
+}
+
 type corePluginLogger struct {
 	id pluginapi.ID
 }
@@ -75,7 +127,11 @@ func (l corePluginLogger) Warn(message string)  { logWarn("[plugin:%s] %s", l.id
 func (l corePluginLogger) Error(message string) { logError("[plugin:%s] %s", l.id, message) }
 
 func newPluginManager() *pluginruntime.Manager {
-	return pluginruntime.New(func(descriptor pluginapi.Descriptor) pluginapi.Logger {
+	manager := pluginruntime.New(func(descriptor pluginapi.Descriptor) pluginapi.Logger {
 		return corePluginLogger{id: descriptor.ID}
 	})
+	if err := manager.ReserveCommands(coreReservedPluginCommands...); err != nil {
+		panic(fmt.Sprintf("invalid core command reservation: %v", err))
+	}
+	return manager
 }

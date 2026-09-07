@@ -189,10 +189,75 @@ The first typed-JSON decoder was designed before inspecting the actual generated
 
 - Added a versioned datagen manifest schema recording Minecraft version, protocol version, data version, official `server.jar` SHA-256, exact datagen command and SHA-256 hashes for every consumed input.
 - Added strict manifest validation for source kind, version mismatches, lowercase SHA-256 values, duplicate or unsafe input paths and empty generation commands.
-- Added deterministic manifest encoding: input records are canonicalized by path so filesystem traversal order cannot create meaningless diffs.
+- Added deterministic manifest encoding: input records are canonicalized by path so filesystem traversal order cannot create meaningless manifest diffs.
 - Added a streaming SHA-256 helper for importer inputs.
 - Updated `data/26.2/README.md` to require the manifest for any future checked-in generated dataset and to document the official server datagen invocation used as provenance.
 
 ### Why
 
 Generated game data is source code for the runtime even though it is not hand-written Go. CyuCore must be able to prove which official artifact produced a dataset and reproduce the same input set later. Provenance metadata is validated at build/import time and does not add Java or network dependencies to server startup.
+
+## 2026-09-07 — Protocol 776 scope and optional-NBT correction
+
+### Correction to earlier log entries
+
+Two assumptions recorded earlier in this file were later disproved by Minecraft 26.2 implementation evidence and an actual vanilla Configuration capture. The history above is intentionally left unchanged; this entry supersedes those assumptions.
+
+- `RegistrySynchronization.PackedRegistryEntry` uses `ByteBufCodecs.TAG.apply(ByteBufCodecs::optional)`. The optional wrapper writes an explicit boolean before anonymous NBT. A present entry is therefore `0x01 + NBT`; an omitted known-pack entry is `0x00`. The earlier TAG_End-as-null encoding was removed and byte-level tests now lock the correct representation.
+- `minecraft:worldgen/world_preset` is a data-pack/worldgen registry but is not one of Minecraft 26.2's 29 `RegistryDataLoader.SYNCHRONIZED_REGISTRIES`. The previous client crash mentioning `world_preset` was not evidence that CyuCore needed to send another RegistryData packet. It was evidence that the prototype UpdateTags blob contained a registry group outside the client's network-safe registry access.
+
+### Version contract
+
+- Added the exact ordered 29-registry protocol-776 synchronized registry set to `internal/protocol/java/v776`.
+- `RegistryData` emission must resolve exactly that ordered set; generic registry iteration is not permitted to define protocol scope.
+- `minecraft:damage_type` is synchronized and `minecraft:damage_type/minecraft:is_fire` remains an explicit regression requirement.
+- `minecraft:worldgen/world_preset` is explicitly excluded from the synchronized registry contract and must not appear in the Configuration UpdateTags closure.
+
+### Why
+
+Data-pack capability, worldgen membership and network synchronization are different properties. Keeping them separate prevents a client crash from being "fixed" by expanding network scope in ways vanilla itself does not use.
+
+## 2026-09-07 — Authoritative vanilla Configuration capture
+
+### What changed
+
+- Added strict Java network-NBT decoding and deterministic typed-JSON encoding, completing a reversible `wire -> nbt.Value -> JSON -> nbt.Value -> wire` boundary.
+- Added `internal/vanilla/capture` to decode protocol-776 RegistryData and UpdateTags payloads, resolve numeric tag IDs and build the same structured `registry.Dataset` consumed by runtime code.
+- Added `cmd/vanilla-capture`, a minimal protocol-776 client that performs only Handshake, Login and Configuration against an offline vanilla server. It deliberately selects zero known packs so every synchronized registry entry includes its full NBT payload.
+- Added `.github/workflows/vanilla-data.yml`. The workflow downloads the official Minecraft 26.2 server jar, verifies Mojang's published SHA-1, runs the Java 25 datagen reports, starts an isolated offline vanilla server, captures its real Configuration sequence and validates the resulting dataset.
+- The first authoritative workflow run completed successfully end to end: official artifact verification, Mojang datagen, vanilla startup, Configuration capture, structured-data validation and the Go test suite all passed.
+
+### Captured 26.2 dataset
+
+- Official server.jar SHA-1: `823e2250d24b3ddac457a60c92a6a941943fcd6a`.
+- Captured server.jar SHA-256 pinned by the manifest: `cdacdfb25898de5e4b4b0e5ddcc2722f77067e46605709c2d886c000ebb63ec5`.
+- Minecraft version: `26.2`; protocol: `776`; data version: `4903`.
+- The runtime dataset contains 36 registries: the exact 29 synchronized registries plus 7 static registries needed only to resolve numeric IDs for network-safe tags (`block`, `entity_type`, `fluid`, `game_event`, `item`, `point_of_interest_type`, `potion`).
+- The capture contains 15 non-empty UpdateTags registry groups and 3421 total registry entries.
+- `minecraft:damage_type/minecraft:is_fire` is present.
+- `minecraft:worldgen/world_preset` is absent from both RegistryData and UpdateTags, matching vanilla network scope.
+
+### Reproducibility boundary
+
+The capture workflow is now read-only. On relevant pull requests it regenerates `/tmp/registry-set.json` and `/tmp/manifest.json` from the official server and requires byte-for-byte equality with the checked-in `data/26.2` files. Java is a generation/verification dependency only; production startup remains pure Go.
+
+## 2026-09-07 — Structured registry runtime cutover
+
+### What changed
+
+- Embedded `data/26.2/registry-set.json` and `manifest.json` into the Go binary so runtime behavior does not depend on the process working directory.
+- Startup validates the exact Minecraft/protocol/data versions and requires an authoritative `mojang-server-capture` manifest before decoding the registry graph.
+- Startup resolves and pre-encodes the exact 29 v776 RegistryData payloads and the validated UpdateTags payload once; sessions reuse these immutable bytes instead of decoding or transforming registry data per connection.
+- `Server` now explicitly owns the validated Configuration data. `NewServer` requires it as a constructor dependency, and a session only asks the server to enqueue the legal Configuration sequence.
+- Added data-level and application-level regression tests that decode the embedded RegistryData/UpdateTags output and lock the actual send order: 29 RegistryData packets, one UpdateTags packet, then FinishConfiguration.
+- Deleted the prototype Base64/GZip `registries.go` bootstrap and its decompression helpers.
+- Removed the temporary CI `gofmt` exception for `registries.go`; formatting is strict across the entire Go tree again.
+- Removed the capture workflow's temporary repository-write permission used to land the first generated dataset.
+
+### Resulting invariant
+
+There is now one inspectable source of truth for Minecraft 26.2 Configuration data: the provenance-pinned structured dataset generated from vanilla behavior. Runtime code cannot silently fall back to an opaque packet dump, and malformed or version-mismatched data prevents server startup rather than failing later inside a client join.
+
+### Remaining architectural work
+
+This completes the Registry/Data foundation, not the Minecraft server as a whole. Player transform/gameplay state still needs single-owner runtime migration, packet handlers still need further versioned typed decoding, and the public Plugin API/loader must be built on those stable ownership boundaries rather than coupled to prototype `package main` structures.

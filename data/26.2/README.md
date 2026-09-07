@@ -1,41 +1,52 @@
 # Minecraft 26.2 vanilla data
 
-This directory is reserved for **generated, version-pinned vanilla data** consumed by CyuCore's structured registry/data layer.
+This directory contains the **generated, version-pinned vanilla Configuration dataset** embedded into CyuCore for Minecraft 26.2 / protocol 776.
 
-No partial hand-written registry set should be committed here merely to make a client advance further through Configuration. A checked-in dataset must be reproducible and self-consistent.
+The checked-in files are not hand-maintained compatibility patches:
 
-## Provenance requirements
+- `registry-set.json` is produced from an actual offline Minecraft 26.2 vanilla server Configuration session.
+- `manifest.json` pins the Minecraft/protocol/data versions, exact official `server.jar` SHA-256, capture command and consumed Mojang report hashes.
+- `vanilla_data.go` embeds and validates both files before the server starts accepting players.
 
-Every generated dataset added here must document:
+Runtime numeric IDs are derived deterministically from vanilla packet/report ordering. Gameplay code must never maintain a second registry-ID table.
 
-- exact Minecraft version (`26.2` for this directory)
-- source artifact or upstream data source
-- source hash/version when available
-- extraction/generation tool and command
-- transformations performed by CyuCore tooling
-- validation command and result
+## Authoritative generation path
 
-Runtime numeric IDs must be derived deterministically from the source ordering. They must not be maintained manually in gameplay code.
+`.github/workflows/vanilla-data.yml` is the reproducible verification path. It:
 
-A committed generated dataset must include `manifest.json` using CyuCore's datagen manifest schema. The manifest records Minecraft/protocol/data versions, the exact official `server.jar` SHA-256, the datagen command, and SHA-256 hashes for every consumed generated input. Inputs are written in canonical path order so rebuilding the same source data does not create meaningless manifest diffs.
+1. downloads the official Minecraft 26.2 `server.jar`
+2. verifies Mojang's published SHA-1 before executing it
+3. runs Mojang's Java 25 datagen to obtain `reports/registries.json`
+4. starts an isolated offline vanilla server with network compression disabled
+5. runs `cmd/vanilla-capture`, a minimal protocol-776 client
+6. selects zero known packs so vanilla sends complete synchronized registry NBT
+7. captures the exact `RegistryData` sequence and `UpdateTags` payload
+8. resolves static tag registry IDs through Mojang's generated registry report
+9. rebuilds CyuCore's structured dataset and compares it byte-for-byte with the checked-in files
+10. runs the Go test suite against the generated result
 
-The intended official report command for modern bundled server jars is equivalent to:
+Java is a **data-generation/verification dependency only**. A released CyuCore server remains a Go binary and does not invoke Java at runtime.
 
-```text
-java -DbundlerMainClass=net.minecraft.data.Main -jar server.jar --reports --output generated
-```
+## Protocol scope
 
-The importer treats this command as provenance, not as a runtime dependency: CyuCore does not invoke Java while starting a server.
+Minecraft 26.2 synchronizes exactly 29 data-driven registries through Configuration `RegistryData`. The checked-in dataset additionally contains the static registries required to resolve numeric IDs in vanilla's network-safe `UpdateTags` groups.
+
+`minecraft:worldgen/world_preset` is intentionally **not** a synchronized RegistryData registry and must not appear as an UpdateTags group. The earlier client failure mentioning that registry was caused by an invalid tag scope, not by a missing RegistryData packet.
+
+`minecraft:damage_type` is synchronized, and the dataset must include the `minecraft:is_fire` tag. This remains a regression anchor for the original Configuration crash.
 
 ## Validation requirements
 
-Before a dataset can replace the prototype `registries.go` bootstrap blob it must, at minimum:
+The checked-in dataset must always:
 
 1. decode through `internal/registry`
 2. contain no duplicate registries, entries or tags
 3. contain no tag references to missing registry entries
-4. satisfy the complete Minecraft 26.2 Configuration requirement set
-5. produce RegistryData/UpdateTags packets accepted by an unmodified 26.2 client
-6. retain regression coverage for previously observed missing `minecraft:damage_type/minecraft:is_fire` and `minecraft:worldgen/world_preset` failures
+4. contain the exact protocol-776 synchronized registry sequence
+5. contain `minecraft:damage_type/minecraft:is_fire`
+6. exclude `minecraft:worldgen/world_preset` from the synchronized/tag network scope
+7. round-trip through CyuCore's v776 RegistryData and UpdateTags encoders
+8. reproduce byte-for-byte through the official vanilla capture workflow
+9. pass normal tests, `go vet`, and the race detector
 
-The opaque bootstrap blob remains temporary until those conditions are met; this directory must not become a second collection of ad-hoc compatibility patches.
+The previous Base64/GZip `registries.go` bootstrap was removed when this dataset became the runtime source of truth. There is no fallback opaque packet dump.

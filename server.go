@@ -15,20 +15,20 @@ import (
 )
 
 type Server struct {
-	configMgr     *ConfigManager
-	configuration *vanillaConfiguration
-	listener      net.Listener
-	running       atomic.Bool
-	startTime     time.Time
-	players       sync.Map
-	entitySeq     atomic.Int32
-	onlineCount   atomic.Int32
-	totalLogins   atomic.Int64
-	totalPackets  atomic.Int64
-	world         *World
-	cmdHandler    *CommandHandler
+	configMgr      *ConfigManager
+	configuration  *vanillaConfiguration
+	listener       net.Listener
+	running        atomic.Bool
+	startTime      time.Time
+	players        sync.Map
+	entitySeq      atomic.Int32
+	onlineCount    atomic.Int32
+	totalLogins    atomic.Int64
+	totalPackets   atomic.Int64
+	world          *World
+	cmdHandler     *CommandHandler
 	runtimeMailbox *mailbox.Queue
-	tickLoop      *tick.Loop
+	tickLoop       *tick.Loop
 }
 
 func NewServer(configMgr *ConfigManager, configuration *vanillaConfiguration) (*Server, error) {

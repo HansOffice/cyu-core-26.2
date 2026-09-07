@@ -123,7 +123,7 @@ func (s *PlayerSession) Close() {
 		s.setState(StateClosed)
 		close(s.done)
 		s.conn.Close()
-		if s.username != "" {
+		if s.username != "" && s.server != nil {
 			s.server.RemovePlayer(s)
 		}
 	}
@@ -215,11 +215,7 @@ func (s *PlayerSession) handleConfig(packetID int, payload []byte) {
 	switch packetID {
 	case ConfigPktServerBoundClientInfo:
 	case ConfigPktServerBoundKnownPacks:
-		for _, pkt := range cachedRegistryPackets {
-			s.SendPacket(ConfigPktClientBoundRegistryData, pkt)
-		}
-		s.SendPacket(ConfigPktClientBoundUpdateTags, cachedUpdateTagsPacket)
-		s.SendPacket(ConfigPktClientBoundFinishConfig, []byte{})
+		s.server.sendConfiguration(s)
 	case ConfigPktServerBoundFinishConfig:
 		s.setState(StatePlay)
 		s.enterPlay()

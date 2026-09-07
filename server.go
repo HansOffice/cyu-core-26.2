@@ -156,6 +156,10 @@ func (s *Server) sendConfiguration(session *PlayerSession) bool {
 // AddPlayer runs on the tick owner after the session's initial gameplay state
 // has been initialized.
 func (s *Server) AddPlayer(session *PlayerSession) {
+	if session == nil || session.State() != StatePlay {
+		return
+	}
+
 	newPlayerInfo := buildPlayerInfoAdd(session.uuid, session.username, session.gameMode)
 	newPlayerEntity := buildAddPlayerEntity(session.entityID, session.uuid, session.x, session.y, session.z, session.yaw, session.pitch)
 
@@ -191,7 +195,23 @@ func (s *Server) AddPlayer(session *PlayerSession) {
 		session.username, formatUUID(session.uuid), session.x, session.y, session.z)
 }
 
+// RemovePlayer may be called from network/write goroutines. While the tick loop
+// is active, removal is retained as critical lifecycle work so the player set
+// and leave broadcasts remain owned by the runtime goroutine. Once the tick
+// loop is stopped, shutdown performs the same cleanup synchronously.
 func (s *Server) RemovePlayer(session *PlayerSession) {
+	if s == nil || session == nil {
+		return
+	}
+	if s.tickLoop != nil && s.tickLoop.Running() {
+		if s.postRuntimeCritical(func() { s.removePlayerOwned(session) }) {
+			return
+		}
+	}
+	s.removePlayerOwned(session)
+}
+
+func (s *Server) removePlayerOwned(session *PlayerSession) {
 	if _, loaded := s.players.LoadAndDelete(strings.ToLower(session.username)); loaded {
 		s.onlineCount.Add(-1)
 		removeEntityPayload := buildRemoveEntities(session.entityID)

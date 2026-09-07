@@ -217,8 +217,8 @@ func (r scopedCommandRegistrar) Register(definition commandapi.Definition, handl
 }
 
 type commandRegistration struct {
-	registry   *commandRegistry
-	id         uint64
+	registry     *commandRegistry
+	id           uint64
 	unregistered atomic.Bool
 }
 

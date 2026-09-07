@@ -17,10 +17,10 @@ const (
 )
 
 var (
-	ErrInvalidName        = errors.New("command: invalid name")
-	ErrInvalidDefinition  = errors.New("command: invalid definition")
-	ErrNilHandler         = errors.New("command: nil handler")
-	ErrNilSource          = errors.New("command: nil source")
+	ErrInvalidName       = errors.New("command: invalid name")
+	ErrInvalidDefinition = errors.New("command: invalid definition")
+	ErrNilHandler        = errors.New("command: nil handler")
+	ErrNilSource         = errors.New("command: nil source")
 )
 
 // Name is a canonical lower-case command literal without a leading slash.

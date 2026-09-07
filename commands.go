@@ -44,6 +44,9 @@ func (h *CommandHandler) Handle(session *PlayerSession, rawCmd string) {
 	case "clear":
 		h.cmdClear(session)
 	default:
+		if h.server != nil && h.server.executePluginCommand(session, cmd, args) {
+			return
+		}
 		session.SendSystemMessage(fmt.Sprintf("&c未知指令: /%s。输入 &e/help &c查看可用指令。", cmd))
 	}
 }

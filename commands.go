@@ -82,7 +82,7 @@ func (h *CommandHandler) cmdGameMode(s *PlayerSession, args []string) {
 		return
 	}
 
-	s.gameMode = mode
+	s.setGameModeOwned(mode)
 	s.SendPacket(PlayPktClientBoundGameEvent, buildGameEventGameMode(mode))
 
 	modeNames := []string{"生存模式", "创造模式", "冒险模式", "旁观模式"}

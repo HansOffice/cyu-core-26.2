@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"cyu-core-26.2/internal/runtime/mailbox"
 	"cyu-core-26.2/internal/runtime/tick"
 )
 
@@ -26,6 +27,7 @@ type Server struct {
 	totalPackets  atomic.Int64
 	world         *World
 	cmdHandler    *CommandHandler
+	runtimeMailbox *mailbox.Queue
 	tickLoop      *tick.Loop
 }
 
@@ -39,9 +41,10 @@ func NewServer(configMgr *ConfigManager, configuration *vanillaConfiguration) (*
 
 	cfg := configMgr.Get()
 	s := &Server{
-		configMgr:     configMgr,
-		configuration: configuration,
-		world:         NewWorld(cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ),
+		configMgr:      configMgr,
+		configuration:  configuration,
+		world:          NewWorld(cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ),
+		runtimeMailbox: mailbox.New(runtimeMailboxCapacity),
 	}
 	s.cmdHandler = NewCommandHandler(s)
 	s.tickLoop = tick.New(tick.DefaultRate, s.tick)
@@ -120,6 +123,8 @@ func (s *Server) keepAliveLoop() {
 }
 
 func (s *Server) tick() {
+	s.runtimeMailbox.Drain(maxRuntimeTasksPerTick)
+
 	age, tod := s.world.AdvanceTime(1)
 	if age%tick.DefaultRate == 0 {
 		s.BroadcastPacket(PlayPktClientBoundSetTime, buildSetTime(age, tod))
@@ -148,6 +153,8 @@ func (s *Server) sendConfiguration(session *PlayerSession) bool {
 	return session.SendPacket(ConfigPktClientBoundFinishConfig, nil)
 }
 
+// AddPlayer runs on the tick owner after the session's initial gameplay state
+// has been initialized.
 func (s *Server) AddPlayer(session *PlayerSession) {
 	newPlayerInfo := buildPlayerInfoAdd(session.uuid, session.username, session.gameMode)
 	newPlayerEntity := buildAddPlayerEntity(session.entityID, session.uuid, session.x, session.y, session.z, session.yaw, session.pitch)
@@ -203,6 +210,8 @@ func (s *Server) RemovePlayer(session *PlayerSession) {
 	}
 }
 
+// BroadcastEntityMove must be called by the runtime owner because it reads the
+// sender's authoritative gameplay fields.
 func (s *Server) BroadcastEntityMove(sender *PlayerSession) {
 	payload := buildEntityPositionSync(sender.entityID, sender.x, sender.y, sender.z, sender.yaw, sender.pitch, sender.onGround)
 	s.players.Range(func(key, value interface{}) bool {
@@ -246,6 +255,8 @@ func (s *Server) GetOnlineCount() int {
 	return int(s.onlineCount.Load())
 }
 
+// HandlePlayerChat runs on the runtime owner. Commands are therefore allowed
+// to mutate tick-owned player/world state without introducing a second owner.
 func (s *Server) HandlePlayerChat(sender *PlayerSession, message string) {
 	if strings.HasPrefix(message, "/") {
 		s.cmdHandler.Handle(sender, message)
@@ -300,8 +311,7 @@ func (s *Server) ListPlayers() []string {
 	var list []string
 	s.players.Range(func(key, value interface{}) bool {
 		if session, ok := value.(*PlayerSession); ok && session.State() == StatePlay {
-			info := fmt.Sprintf("%s (pos: %.1f, %.1f, %.1f)", session.username, session.x, session.y, session.z)
-			list = append(list, info)
+			list = append(list, s.playerListLine(session))
 		}
 		return true
 	})

@@ -14,29 +14,38 @@ import (
 )
 
 type Server struct {
-	configMgr    *ConfigManager
-	listener     net.Listener
-	running      atomic.Bool
-	startTime    time.Time
-	players      sync.Map
-	entitySeq    atomic.Int32
-	onlineCount  atomic.Int32
-	totalLogins  atomic.Int64
-	totalPackets atomic.Int64
-	world        *World
-	cmdHandler   *CommandHandler
-	tickLoop     *tick.Loop
+	configMgr     *ConfigManager
+	configuration *vanillaConfiguration
+	listener      net.Listener
+	running       atomic.Bool
+	startTime     time.Time
+	players       sync.Map
+	entitySeq     atomic.Int32
+	onlineCount   atomic.Int32
+	totalLogins   atomic.Int64
+	totalPackets  atomic.Int64
+	world         *World
+	cmdHandler    *CommandHandler
+	tickLoop      *tick.Loop
 }
 
-func NewServer(configMgr *ConfigManager) *Server {
+func NewServer(configMgr *ConfigManager, configuration *vanillaConfiguration) (*Server, error) {
+	if configMgr == nil {
+		return nil, fmt.Errorf("server: nil config manager")
+	}
+	if configuration == nil {
+		return nil, fmt.Errorf("server: nil vanilla configuration")
+	}
+
 	cfg := configMgr.Get()
 	s := &Server{
-		configMgr: configMgr,
-		world:     NewWorld(cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ),
+		configMgr:     configMgr,
+		configuration: configuration,
+		world:         NewWorld(cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ),
 	}
 	s.cmdHandler = NewCommandHandler(s)
 	s.tickLoop = tick.New(tick.DefaultRate, s.tick)
-	return s
+	return s, nil
 }
 
 func (s *Server) Start() error {
@@ -119,6 +128,24 @@ func (s *Server) tick() {
 
 func (s *Server) TickMetrics() tick.Snapshot {
 	return s.tickLoop.Snapshot()
+}
+
+// sendConfiguration sends the immutable, startup-validated Minecraft 26.2
+// Configuration sequence. The Server owns this versioned data lifecycle;
+// sessions only decide when the protocol state permits sending it.
+func (s *Server) sendConfiguration(session *PlayerSession) bool {
+	if session == nil || s.configuration == nil {
+		return false
+	}
+	for _, payload := range s.configuration.registryData {
+		if !session.SendPacket(ConfigPktClientBoundRegistryData, payload) {
+			return false
+		}
+	}
+	if !session.SendPacket(ConfigPktClientBoundUpdateTags, s.configuration.updateTags) {
+		return false
+	}
+	return session.SendPacket(ConfigPktClientBoundFinishConfig, nil)
 }
 
 func (s *Server) AddPlayer(session *PlayerSession) {

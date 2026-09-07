@@ -28,22 +28,23 @@ type PacketOut struct {
 }
 
 type PlayerSession struct {
-	server       *Server
-	conn         net.Conn
-	state        atomic.Int32
-	entityID     int
-	username     string
-	uuid         [16]byte
-	clientProto  int
-	gameMode     int
-	x, y, z      float64
-	yaw, pitch   float32
-	onGround     bool
-	teleportSeq  int
-	sendChan     chan PacketOut
-	done         chan struct{}
-	closeOnce    atomic.Bool
-	lastPingTime int64
+	server            *Server
+	conn              net.Conn
+	state             atomic.Int32
+	entityID          int
+	username          string
+	uuid              [16]byte
+	clientProto       int
+	configurationSent bool
+	gameMode          int
+	x, y, z           float64
+	yaw, pitch        float32
+	onGround          bool
+	teleportSeq       int
+	sendChan          chan PacketOut
+	done              chan struct{}
+	closeOnce         atomic.Bool
+	lastPingTime      int64
 }
 
 func NewPlayerSession(server *Server, conn net.Conn, entityID int) *PlayerSession {
@@ -123,7 +124,7 @@ func (s *PlayerSession) Close() {
 		s.setState(StateClosed)
 		close(s.done)
 		s.conn.Close()
-		if s.username != "" {
+		if s.username != "" && s.server != nil {
 			s.server.RemovePlayer(s)
 		}
 	}
@@ -215,12 +216,21 @@ func (s *PlayerSession) handleConfig(packetID int, payload []byte) {
 	switch packetID {
 	case ConfigPktServerBoundClientInfo:
 	case ConfigPktServerBoundKnownPacks:
-		for _, pkt := range cachedRegistryPackets {
-			s.SendPacket(ConfigPktClientBoundRegistryData, pkt)
+		if s.configurationSent {
+			logWarn("[protocol] duplicate KnownPacks from %s during Configuration", s.conn.RemoteAddr())
+			s.Close()
+			return
 		}
-		s.SendPacket(ConfigPktClientBoundUpdateTags, cachedUpdateTagsPacket)
-		s.SendPacket(ConfigPktClientBoundFinishConfig, []byte{})
+		s.configurationSent = true
+		if s.server == nil || !s.server.sendConfiguration(s) {
+			s.Close()
+		}
 	case ConfigPktServerBoundFinishConfig:
+		if !s.configurationSent {
+			logWarn("[protocol] premature FinishConfiguration from %s", s.conn.RemoteAddr())
+			s.Close()
+			return
+		}
 		s.setState(StatePlay)
 		s.enterPlay()
 	case ConfigPktServerBoundKeepAlive:

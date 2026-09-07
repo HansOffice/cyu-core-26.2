@@ -18,7 +18,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	server := NewServer(cfgMgr)
+	configuration, err := loadVanillaConfiguration26_2()
+	if err != nil {
+		logError("Failed to load Minecraft 26.2 vanilla data: %v", err)
+		os.Exit(1)
+	}
+
+	server, err := NewServer(cfgMgr, configuration)
+	if err != nil {
+		logError("Failed to initialize server: %v", err)
+		os.Exit(1)
+	}
 	if err := server.Start(); err != nil {
 		logError("Failed to start server on port %d: %v", cfg.Port, err)
 		os.Exit(1)

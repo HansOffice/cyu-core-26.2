@@ -10,9 +10,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	eventapi "cyu-core-26.2/api/event"
+	"cyu-core-26.2/internal/pluginruntime"
 	"cyu-core-26.2/internal/runtime/mailbox"
 	"cyu-core-26.2/internal/runtime/tick"
 )
+
+const runtimeShutdownDrainTimeout = 2 * time.Second
 
 type Server struct {
 	configMgr      *ConfigManager
@@ -27,6 +31,7 @@ type Server struct {
 	totalPackets   atomic.Int64
 	world          *World
 	cmdHandler     *CommandHandler
+	plugins        *pluginruntime.Manager
 	runtimeMailbox *mailbox.Queue[runtimeEvent]
 	tickLoop       *tick.Loop
 }
@@ -44,6 +49,7 @@ func NewServer(configMgr *ConfigManager, configuration *vanillaConfiguration) (*
 		configMgr:      configMgr,
 		configuration:  configuration,
 		world:          NewWorld(cfg.SpawnX, cfg.SpawnY, cfg.SpawnZ),
+		plugins:        newPluginManager(),
 		runtimeMailbox: mailbox.New[runtimeEvent](runtimeMailboxCapacity),
 	}
 	s.cmdHandler = NewCommandHandler(s)
@@ -54,17 +60,34 @@ func NewServer(configMgr *ConfigManager, configuration *vanillaConfiguration) (*
 func (s *Server) Start() error {
 	cfg := s.configMgr.Get()
 	addr := fmt.Sprintf(":%d", cfg.Port)
-	l, err := net.Listen("tcp", addr)
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	s.listener = l
-	s.running.Store(true)
+	s.listener = listener
+
+	if s.plugins != nil {
+		if err := s.plugins.EnableAll(); err != nil {
+			_ = listener.Close()
+			s.listener = nil
+			return fmt.Errorf("server: enable plugins: %w", err)
+		}
+	}
+
 	s.startTime = time.Now()
+	s.running.Store(true)
+	if !s.tickLoop.Start() {
+		s.running.Store(false)
+		if s.plugins != nil {
+			_ = s.plugins.DisableAll()
+		}
+		_ = listener.Close()
+		s.listener = nil
+		return fmt.Errorf("server: tick loop failed to start")
+	}
 
 	go s.acceptLoop()
 	go s.keepAliveLoop()
-	s.tickLoop.Start()
 	return nil
 }
 
@@ -73,7 +96,12 @@ func (s *Server) Stop() {
 		return
 	}
 
-	s.tickLoop.Stop()
+	// Stop accepting first. Registered-player closes then enqueue critical
+	// runtime removal events while the tick owner is still alive.
+	if s.listener != nil {
+		_ = s.listener.Close()
+	}
+
 	s.BroadcastSystemMessage("&c[CyuCore] 服务端正在关闭...")
 	s.players.Range(func(_, value any) bool {
 		if session, ok := value.(*PlayerSession); ok {
@@ -82,8 +110,35 @@ func (s *Server) Stop() {
 		}
 		return true
 	})
-	if s.listener != nil {
-		_ = s.listener.Close()
+
+	if !s.waitRuntimeBarrier(runtimeShutdownDrainTimeout) {
+		logWarn("[runtime] timed out draining registered-player lifecycle events during shutdown")
+	}
+	s.tickLoop.Stop()
+
+	if s.plugins != nil {
+		if err := s.plugins.DisableAll(); err != nil {
+			logWarn("[plugin] one or more plugins failed to disable cleanly: %v", err)
+		}
+	}
+}
+
+func (s *Server) waitRuntimeBarrier(timeout time.Duration) bool {
+	if s == nil || s.tickLoop == nil || !s.tickLoop.Running() {
+		return true
+	}
+	done := make(chan struct{})
+	if !s.postRuntimeCritical(runtimeEvent{kind: runtimeEventBarrier, barrier: done}) {
+		return false
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -123,7 +178,7 @@ func (s *Server) keepAliveLoop() {
 }
 
 func (s *Server) tick() {
-	s.drainRuntimeEvents(maxRuntimeTasksPerTick)
+	s.drainRuntimeEvents(maxRuntimeEventsPerTick)
 
 	age, tod := s.world.AdvanceTime(1)
 	if age%tick.DefaultRate == 0 {
@@ -209,6 +264,7 @@ func (s *Server) AddPlayer(session *PlayerSession) {
 		return true
 	})
 
+	s.dispatchPluginEvent(eventapi.PlayerJoin{Player: s.pluginPlayerSnapshot(session)})
 	logInfo("[+] 玩家 %s (UUID: %s) 成功进入世界 (坐标: %.1f, %.1f, %.1f)",
 		session.username, formatUUID(session.uuid), session.x, session.y, session.z)
 }
@@ -231,6 +287,7 @@ func (s *Server) removePlayerOwned(session *PlayerSession) {
 	if session == nil || !session.registered.Swap(false) {
 		return
 	}
+	pluginSnapshot := s.pluginPlayerSnapshot(session)
 
 	key := strings.ToLower(session.username)
 	if !s.players.CompareAndDelete(key, session) {
@@ -248,6 +305,7 @@ func (s *Server) removePlayerOwned(session *PlayerSession) {
 		return true
 	})
 
+	s.dispatchPluginEvent(eventapi.PlayerQuit{Player: pluginSnapshot})
 	logInfo("[-] 玩家 %s 离开了世界", session.username)
 	s.BroadcastSystemMessage(fmt.Sprintf("&e玩家 &f%s &e退出了服务器。", session.username))
 }
@@ -304,6 +362,14 @@ func (s *Server) HandlePlayerChat(sender *PlayerSession, message string) {
 		s.cmdHandler.Handle(sender, message)
 		return
 	}
+
+	chatEvent := eventapi.NewPlayerChat(s.pluginPlayerSnapshot(sender), message)
+	s.dispatchPluginEvent(chatEvent)
+	if chatEvent.Cancelled() {
+		return
+	}
+	message = chatEvent.Message()
+
 	logInfo("<%s> %s", sender.username, message)
 	s.BroadcastSystemMessage(fmt.Sprintf("&7<%s&7>&f %s", sender.username, message))
 }

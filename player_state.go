@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	runtimeMailboxCapacity = 4096
-	maxRuntimeTasksPerTick = 1024
+	runtimeMailboxCapacity  = 4096
+	maxRuntimeEventsPerTick = 1024
 )
 
 type runtimeEventKind uint8
@@ -17,6 +17,7 @@ const (
 	runtimeEventInvalid runtimeEventKind = iota
 	runtimeEventEnterPlay
 	runtimeEventRemovePlayer
+	runtimeEventBarrier
 	runtimeEventPlayerMove
 	runtimeEventPlayerChat
 	runtimeEventPlayerAnimation
@@ -44,6 +45,7 @@ type runtimeEvent struct {
 	x, y, z   int
 	blockID   int
 	sequence  int
+	barrier   chan struct{}
 }
 
 // playerSnapshot is a coherent cross-goroutine view of tick-owned gameplay
@@ -180,6 +182,10 @@ func (s *Server) applyRuntimeEvent(event runtimeEvent) {
 		}
 	case runtimeEventRemovePlayer:
 		s.removePlayerOwned(event.session)
+	case runtimeEventBarrier:
+		if event.barrier != nil {
+			close(event.barrier)
+		}
 	case runtimeEventPlayerMove:
 		if s.runtimePlayerActive(event.session) {
 			s.applyPlayerMove(event.session, event.move)

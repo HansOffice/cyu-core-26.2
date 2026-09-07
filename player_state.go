@@ -61,6 +61,13 @@ func (s *Server) postRuntime(task mailbox.Task) bool {
 	return s.runtimeMailbox.TryPost(task)
 }
 
+func (s *Server) postRuntimeCritical(task mailbox.Task) bool {
+	if s == nil || s.runtimeMailbox == nil {
+		return false
+	}
+	return s.runtimeMailbox.PostCritical(task)
+}
+
 func (s *Server) postPlayerRuntime(session *PlayerSession, task func()) bool {
 	if session == nil || task == nil {
 		return false

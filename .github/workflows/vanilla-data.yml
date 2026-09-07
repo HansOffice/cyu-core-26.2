@@ -1,0 +1,138 @@
+name: Vanilla 26.2 Data Capture
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feat/registry-data-foundation
+    paths:
+      - ".github/workflows/vanilla-data.yml"
+      - "cmd/vanilla-capture/**"
+      - "internal/nbt/**"
+      - "internal/protocol/java/v776/**"
+      - "internal/registry/**"
+      - "internal/vanilla/capture/**"
+      - "internal/vanilla/datagen/**"
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Download official Minecraft 26.2 server
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            --output server.jar \
+            https://piston-data.mojang.com/v1/objects/823e2250d24b3ddac457a60c92a6a941943fcd6a/server.jar
+          echo "823e2250d24b3ddac457a60c92a6a941943fcd6a  server.jar" | sha1sum --check --strict
+          echo "SERVER_JAR_SHA256=$(sha256sum server.jar | cut -d ' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Generate official Mojang registry reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -Xmx2G -DbundlerMainClass=net.minecraft.data.Main \
+            -jar server.jar --reports --output generated
+          test -s generated/reports/registries.json
+          test -s generated/reports/datapack.json
+
+      - name: Start isolated vanilla server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p vanilla
+          cp server.jar vanilla/server.jar
+          printf 'eula=true\n' > vanilla/eula.txt
+          cat > vanilla/server.properties <<'EOF'
+          online-mode=false
+          enforce-secure-profile=false
+          network-compression-threshold=-1
+          server-ip=127.0.0.1
+          server-port=25565
+          spawn-protection=0
+          view-distance=2
+          simulation-distance=2
+          sync-chunk-writes=false
+          motd=CyuCore vanilla data capture
+          EOF
+
+          pushd vanilla >/dev/null
+          java -Xms512M -Xmx1G -jar server.jar nogui > server.log 2>&1 &
+          echo $! > server.pid
+          popd >/dev/null
+
+          for _ in $(seq 1 120); do
+            pid=$(cat vanilla/server.pid)
+            if ! kill -0 "$pid" 2>/dev/null; then
+              cat vanilla/server.log
+              exit 1
+            fi
+            if (exec 3<>/dev/tcp/127.0.0.1/25565) 2>/dev/null; then
+              exec 3>&-
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat vanilla/server.log
+          echo "vanilla server did not become ready" >&2
+          exit 1
+
+      - name: Capture authoritative Configuration data
+        shell: bash
+        run: |
+          set -euo pipefail
+          go run ./cmd/vanilla-capture \
+            -addr 127.0.0.1:25565 \
+            -reports generated/reports/registries.json \
+            -out data/26.2/registry-set.json \
+            -manifest data/26.2/manifest.json \
+            -server-jar-sha256 "$SERVER_JAR_SHA256"
+          test -s data/26.2/registry-set.json
+          test -s data/26.2/manifest.json
+
+      - name: Validate generated dataset
+        run: go test ./...
+
+      - name: Upload capture artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vanilla-26.2-registry-data
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            data/26.2/registry-set.json
+            data/26.2/manifest.json
+            generated/reports/registries.json
+            generated/reports/datapack.json
+            vanilla/server.log
+
+      - name: Stop vanilla server
+        if: always()
+        shell: bash
+        run: |
+          if [ -f vanilla/server.pid ]; then
+            kill "$(cat vanilla/server.pid)" 2>/dev/null || true
+          fi

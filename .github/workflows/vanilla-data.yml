@@ -2,20 +2,21 @@ name: Vanilla 26.2 Data Capture
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - feat/registry-data-foundation
+  pull_request:
     paths:
       - ".github/workflows/vanilla-data.yml"
       - "cmd/vanilla-capture/**"
+      - "data/26.2/**"
       - "internal/nbt/**"
       - "internal/protocol/java/v776/**"
       - "internal/registry/**"
       - "internal/vanilla/capture/**"
       - "internal/vanilla/datagen/**"
+      - "vanilla_data.go"
+      - "vanilla_data_test.go"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   capture:
@@ -106,40 +107,25 @@ jobs:
           go run ./cmd/vanilla-capture \
             -addr 127.0.0.1:25565 \
             -reports generated/reports/registries.json \
-            -out data/26.2/registry-set.json \
-            -manifest data/26.2/manifest.json \
+            -out /tmp/registry-set.json \
+            -manifest /tmp/manifest.json \
             -server-jar-sha256 "$SERVER_JAR_SHA256"
-          test -s data/26.2/registry-set.json
-          test -s data/26.2/manifest.json
+          cmp --silent /tmp/registry-set.json data/26.2/registry-set.json
+          cmp --silent /tmp/manifest.json data/26.2/manifest.json
 
-      - name: Validate generated dataset
+      - name: Validate checked-in dataset
         run: go test ./...
 
-      - name: Publish generated dataset on foundation branch
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/registry-data-foundation'
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/26.2/registry-set.json data/26.2/manifest.json
-          if git diff --cached --quiet; then
-            echo "generated dataset is unchanged"
-          else
-            git commit -m "data(v776): capture vanilla 26.2 configuration dataset"
-            git push
-          fi
-
-      - name: Upload capture artifact
-        if: always()
+      - name: Upload capture diagnostics
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: vanilla-26.2-registry-data
+          name: vanilla-26.2-capture-diagnostics
           if-no-files-found: warn
           retention-days: 7
           path: |
-            data/26.2/registry-set.json
-            data/26.2/manifest.json
+            /tmp/registry-set.json
+            /tmp/manifest.json
             generated/reports/registries.json
             generated/reports/datapack.json
             vanilla/server.log

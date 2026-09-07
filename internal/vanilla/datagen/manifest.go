@@ -14,8 +14,8 @@ import (
 const ManifestSchemaVersion = 1
 
 const (
-	MojangServerDatagen  = "mojang-server-datagen"
-	MojangServerCapture  = "mojang-server-capture"
+	MojangServerDatagen = "mojang-server-datagen"
+	MojangServerCapture = "mojang-server-capture"
 )
 
 // Version identifies the Minecraft data contract a generated dataset targets.

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	commandapi "cyu-core-26.2/api/command"
 	eventapi "cyu-core-26.2/api/event"
 	pluginapi "cyu-core-26.2/api/plugin"
 	schedulerapi "cyu-core-26.2/api/scheduler"
@@ -56,20 +57,24 @@ func (s State) String() string {
 
 // Snapshot is an immutable diagnostic view suitable for status/timing surfaces.
 type Snapshot struct {
-	Descriptor         pluginapi.Descriptor
-	State              State
-	EnableDuration     time.Duration
-	DisableDuration    time.Duration
-	LastError          string
-	EventCalls         uint64
-	EventErrors        uint64
-	EventTotalDuration time.Duration
-	EventMaxDuration   time.Duration
-	TaskCalls          uint64
-	TaskErrors         uint64
-	TaskTotalDuration  time.Duration
-	TaskMaxDuration    time.Duration
-	ScheduledTasks     int64
+	Descriptor           pluginapi.Descriptor
+	State                State
+	EnableDuration       time.Duration
+	DisableDuration      time.Duration
+	LastError            string
+	EventCalls           uint64
+	EventErrors          uint64
+	EventTotalDuration   time.Duration
+	EventMaxDuration     time.Duration
+	CommandCalls         uint64
+	CommandErrors        uint64
+	CommandTotalDuration time.Duration
+	CommandMaxDuration   time.Duration
+	TaskCalls            uint64
+	TaskErrors           uint64
+	TaskTotalDuration    time.Duration
+	TaskMaxDuration      time.Duration
+	ScheduledTasks       int64
 }
 
 // LoggerFactory lets the host attach a plugin identity to log records without
@@ -87,6 +92,10 @@ type entry struct {
 	eventErrors         atomic.Uint64
 	eventNanos          atomic.Uint64
 	maxEventNanos       atomic.Uint64
+	commandCalls        atomic.Uint64
+	commandErrors       atomic.Uint64
+	commandNanos        atomic.Uint64
+	maxCommandNanos     atomic.Uint64
 
 	state           State
 	enableDuration  time.Duration
@@ -109,6 +118,21 @@ func (e *entry) recordEventCall(duration time.Duration, failed bool) {
 	}
 }
 
+func (e *entry) recordCommandCall(duration time.Duration, failed bool) {
+	nanos := uint64(max(duration.Nanoseconds(), 0))
+	e.commandCalls.Add(1)
+	e.commandNanos.Add(nanos)
+	if failed {
+		e.commandErrors.Add(1)
+	}
+	for {
+		current := e.maxCommandNanos.Load()
+		if nanos <= current || e.maxCommandNanos.CompareAndSwap(current, nanos) {
+			break
+		}
+	}
+}
+
 // Manager owns deterministic plugin registration and lifecycle ordering.
 // lifecycleMu serializes registration/enable/disable without holding the state
 // mutex while plugin code executes; plugin callbacks therefore cannot deadlock
@@ -121,6 +145,7 @@ type Manager struct {
 
 	loggerFactory LoggerFactory
 	events        *eventBus
+	commands      *commandRegistry
 	scheduler     *taskScheduler
 	active        atomic.Bool
 }
@@ -130,8 +155,23 @@ func New(loggerFactory LoggerFactory) *Manager {
 		entries:       make(map[pluginapi.ID]*entry),
 		loggerFactory: loggerFactory,
 		events:        newEventBus(),
+		commands:      newCommandRegistry(),
 		scheduler:     newTaskScheduler(),
 	}
+}
+
+// ReserveCommands prevents plugins from registering literals owned by the host.
+// It must be called before plugins are enabled.
+func (m *Manager) ReserveCommands(names ...commandapi.Name) error {
+	if m == nil {
+		return nil
+	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.active.Load() {
+		return ErrManagerActive
+	}
+	return m.commands.reserve(names...)
 }
 
 // Register validates and records a plugin without executing plugin code beyond
@@ -174,6 +214,7 @@ func (m *Manager) Register(candidate pluginapi.Plugin) error {
 		descriptor: descriptor,
 		logger:     logger,
 		events:     m.events.registrar(current),
+		commands:   m.commands.registrar(current),
 		scheduler:  m.scheduler.registrar(current),
 	}
 
@@ -299,6 +340,7 @@ func (m *Manager) disableEntry(current *entry, successState State) error {
 	})
 	duration := time.Since(started)
 	m.events.removeOwner(current)
+	m.commands.removeOwner(current)
 
 	if err != nil {
 		m.updateDisableState(current, StateFailed, duration, err.Error())
@@ -316,6 +358,15 @@ func (m *Manager) Dispatch(event eventapi.Event) []error {
 		return nil
 	}
 	return m.events.dispatch(event)
+}
+
+// ExecuteCommand resolves and invokes one plugin-owned command synchronously on
+// the caller's runtime owner goroutine.
+func (m *Manager) ExecuteCommand(name commandapi.Name, args []string, source commandapi.Source) (bool, error) {
+	if m == nil || m.commands == nil {
+		return false, nil
+	}
+	return m.commands.execute(name, args, source)
 }
 
 // AdvanceTick advances the plugin scheduler by exactly one server tick and
@@ -343,20 +394,24 @@ func (m *Manager) Snapshots() []Snapshot {
 		current := m.entries[id]
 		tasks := m.scheduler.snapshot(current)
 		snapshots = append(snapshots, Snapshot{
-			Descriptor:         current.descriptor,
-			State:              current.state,
-			EnableDuration:     current.enableDuration,
-			DisableDuration:    current.disableDuration,
-			LastError:          current.lastError,
-			EventCalls:         current.eventCalls.Load(),
-			EventErrors:        current.eventErrors.Load(),
-			EventTotalDuration: time.Duration(current.eventNanos.Load()),
-			EventMaxDuration:   time.Duration(current.maxEventNanos.Load()),
-			TaskCalls:          tasks.calls,
-			TaskErrors:         tasks.errors,
-			TaskTotalDuration:  tasks.totalDuration,
-			TaskMaxDuration:    tasks.maxDuration,
-			ScheduledTasks:     tasks.pending,
+			Descriptor:           current.descriptor,
+			State:                current.state,
+			EnableDuration:       current.enableDuration,
+			DisableDuration:      current.disableDuration,
+			LastError:            current.lastError,
+			EventCalls:           current.eventCalls.Load(),
+			EventErrors:          current.eventErrors.Load(),
+			EventTotalDuration:   time.Duration(current.eventNanos.Load()),
+			EventMaxDuration:     time.Duration(current.maxEventNanos.Load()),
+			CommandCalls:         current.commandCalls.Load(),
+			CommandErrors:        current.commandErrors.Load(),
+			CommandTotalDuration: time.Duration(current.commandNanos.Load()),
+			CommandMaxDuration:   time.Duration(current.maxCommandNanos.Load()),
+			TaskCalls:            tasks.calls,
+			TaskErrors:           tasks.errors,
+			TaskTotalDuration:    tasks.totalDuration,
+			TaskMaxDuration:      tasks.maxDuration,
+			ScheduledTasks:       tasks.pending,
 		})
 	}
 	return snapshots
@@ -410,12 +465,14 @@ type lifecycleContext struct {
 	descriptor pluginapi.Descriptor
 	logger     pluginapi.Logger
 	events     eventapi.Registrar
+	commands   commandapi.Registrar
 	scheduler  schedulerapi.Registrar
 }
 
 func (c lifecycleContext) Descriptor() pluginapi.Descriptor  { return c.descriptor }
 func (c lifecycleContext) Logger() pluginapi.Logger          { return c.logger }
 func (c lifecycleContext) Events() eventapi.Registrar        { return c.events }
+func (c lifecycleContext) Commands() commandapi.Registrar    { return c.commands }
 func (c lifecycleContext) Scheduler() schedulerapi.Registrar { return c.scheduler }
 
 type discardLogger struct{}

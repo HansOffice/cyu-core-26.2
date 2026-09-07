@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	commandapi "cyu-core-26.2/api/command"
 	eventapi "cyu-core-26.2/api/event"
 	schedulerapi "cyu-core-26.2/api/scheduler"
 )
@@ -103,6 +104,7 @@ type Context interface {
 	Descriptor() Descriptor
 	Logger() Logger
 	Events() eventapi.Registrar
+	Commands() commandapi.Registrar
 	Scheduler() schedulerapi.Registrar
 }
 

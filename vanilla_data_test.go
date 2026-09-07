@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"net"
 	"testing"
 
 	v776 "cyu-core-26.2/internal/protocol/java/v776"
@@ -54,5 +56,51 @@ func TestEmbeddedVanillaConfiguration26_2(t *testing.T) {
 	}
 	if !foundFire {
 		t.Fatalf("missing regression tag %s/%s", damageType, isFire)
+	}
+}
+
+func TestServerQueuesValidatedConfigurationInProtocolOrder(t *testing.T) {
+	configuration, err := loadVanillaConfiguration26_2()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	serverConn, peerConn := net.Pipe()
+	defer peerConn.Close()
+	server := &Server{configuration: configuration}
+	session := NewPlayerSession(server, serverConn, 1)
+	defer session.Close()
+
+	if !server.sendConfiguration(session) {
+		t.Fatal("configuration sequence was not accepted by outbound queue")
+	}
+
+	for i, expectedPayload := range configuration.registryData {
+		packet := <-session.sendChan
+		if packet.ID != ConfigPktClientBoundRegistryData {
+			t.Fatalf("packet %d ID = %#x, want RegistryData %#x", i, packet.ID, ConfigPktClientBoundRegistryData)
+		}
+		if !bytes.Equal(packet.Payload, expectedPayload) {
+			t.Fatalf("packet %d RegistryData payload changed while queued", i)
+		}
+	}
+
+	tags := <-session.sendChan
+	if tags.ID != ConfigPktClientBoundUpdateTags {
+		t.Fatalf("UpdateTags ID = %#x, want %#x", tags.ID, ConfigPktClientBoundUpdateTags)
+	}
+	if !bytes.Equal(tags.Payload, configuration.updateTags) {
+		t.Fatal("UpdateTags payload changed while queued")
+	}
+
+	finish := <-session.sendChan
+	if finish.ID != ConfigPktClientBoundFinishConfig {
+		t.Fatalf("FinishConfiguration ID = %#x, want %#x", finish.ID, ConfigPktClientBoundFinishConfig)
+	}
+	if len(finish.Payload) != 0 {
+		t.Fatalf("FinishConfiguration payload length = %d, want 0", len(finish.Payload))
+	}
+	if len(session.sendChan) != 0 {
+		t.Fatalf("unexpected extra Configuration packets: %d", len(session.sendChan))
 	}
 }

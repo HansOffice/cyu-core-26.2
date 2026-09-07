@@ -15,6 +15,7 @@ type commandHostPlugin struct {
 	name       commandapi.Name
 	args       []string
 	player     playerapi.Snapshot
+	source     commandapi.Source
 	registerAs commandapi.Name
 }
 
@@ -39,6 +40,7 @@ func (p *commandHostPlugin) Enable(ctx pluginapi.Context) error {
 		p.calls++
 		p.name = invocation.Name
 		p.args = append([]string(nil), invocation.Args...)
+		p.source = invocation.Source
 		player, ok := invocation.Source.Player()
 		if !ok {
 			return errors.New("expected player command source")
@@ -98,6 +100,18 @@ func TestServerDispatchesPluginCommandOnRuntimeOwner(t *testing.T) {
 	snapshots := server.PluginSnapshots()
 	if len(snapshots) != 1 || snapshots[0].CommandCalls != 1 || snapshots[0].CommandErrors != 0 {
 		t.Fatalf("plugin command metrics = %+v", snapshots)
+	}
+
+	<-session.sendChan
+	if _, ok := plugin.source.Player(); ok {
+		t.Fatal("retained command source remained valid after handler returned")
+	}
+	if got := plugin.source.Kind(); got != commandapi.SourceUnknown {
+		t.Fatalf("retained source kind = %v, want SourceUnknown", got)
+	}
+	plugin.source.Reply("late reply")
+	if got := len(session.sendChan); got != 0 {
+		t.Fatalf("expired source queued %d packets, want 0", got)
 	}
 }
 

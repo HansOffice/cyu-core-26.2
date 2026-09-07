@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 
 	commandapi "cyu-core-26.2/api/command"
 	eventapi "cyu-core-26.2/api/event"
@@ -68,7 +69,9 @@ func (s *Server) executePluginCommand(session *PlayerSession, name string, args 
 		return false
 	}
 
-	handled, err := s.plugins.ExecuteCommand(commandName, args, playerPluginCommandSource{server: s, session: session})
+	source := newPlayerPluginCommandSource(s, session)
+	handled, err := s.plugins.ExecuteCommand(commandName, args, source)
+	source.invalidate()
 	if err != nil {
 		logWarn("[plugin] command %s failed: %v", commandName, err)
 		session.SendSystemMessage("&c插件命令执行失败，请查看服务端日志。")
@@ -97,22 +100,63 @@ func (s *Server) pluginPlayerSnapshot(session *PlayerSession) playerapi.Snapshot
 	}
 }
 
+// playerPluginCommandSource is a synchronous lease. The mutex makes the public
+// contract enforceable even if plugin code incorrectly retains Source and calls
+// it from another goroutine: invalidate waits for any in-flight access and all
+// later Player/Reply calls observe an expired source.
 type playerPluginCommandSource struct {
+	mu      sync.Mutex
+	active  bool
 	server  *Server
 	session *PlayerSession
 }
 
-func (playerPluginCommandSource) Kind() commandapi.SourceKind { return commandapi.SourcePlayer }
+func newPlayerPluginCommandSource(server *Server, session *PlayerSession) *playerPluginCommandSource {
+	return &playerPluginCommandSource{active: true, server: server, session: session}
+}
 
-func (s playerPluginCommandSource) Player() (playerapi.Snapshot, bool) {
-	if s.server == nil || s.session == nil {
+func (s *playerPluginCommandSource) invalidate() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.active = false
+	s.server = nil
+	s.session = nil
+	s.mu.Unlock()
+}
+
+func (s *playerPluginCommandSource) Kind() commandapi.SourceKind {
+	if s == nil {
+		return commandapi.SourceUnknown
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active {
+		return commandapi.SourceUnknown
+	}
+	return commandapi.SourcePlayer
+}
+
+func (s *playerPluginCommandSource) Player() (playerapi.Snapshot, bool) {
+	if s == nil {
+		return playerapi.Snapshot{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.active || s.server == nil || s.session == nil {
 		return playerapi.Snapshot{}, false
 	}
 	return s.server.pluginPlayerSnapshot(s.session), true
 }
 
-func (s playerPluginCommandSource) Reply(message string) {
-	if s.session != nil {
+func (s *playerPluginCommandSource) Reply(message string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.active && s.session != nil {
 		s.session.SendSystemMessage(message)
 	}
 }

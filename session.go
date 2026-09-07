@@ -12,12 +12,13 @@ import (
 type SessionState int32
 
 const (
-	StateHandshake SessionState = 0
-	StateStatus    SessionState = 1
-	StateLogin     SessionState = 2
-	StateConfig    SessionState = 3
-	StatePlay      SessionState = 4
-	StateClosed    SessionState = 5
+	StateHandshake   SessionState = 0
+	StateStatus      SessionState = 1
+	StateLogin       SessionState = 2
+	StateConfig      SessionState = 3
+	StatePlay        SessionState = 4
+	StateClosed      SessionState = 5
+	StatePlayPending SessionState = 6
 )
 
 const outboundQueueCapacity = 128
@@ -41,6 +42,7 @@ type PlayerSession struct {
 	yaw, pitch        float32
 	onGround          bool
 	teleportSeq       int
+	playerSnapshot    atomic.Pointer[playerSnapshot]
 	sendChan          chan PacketOut
 	done              chan struct{}
 	closeOnce         atomic.Bool
@@ -94,17 +96,6 @@ func (s *PlayerSession) SendSystemMessage(text string) {
 	s.SendPacket(PlayPktClientBoundSystemChat, buildSystemChatMessage(text))
 }
 
-func (s *PlayerSession) Teleport(x, y, z float64, yaw, pitch float32) {
-	s.teleportSeq++
-	s.x = x
-	s.y = y
-	s.z = z
-	s.yaw = yaw
-	s.pitch = pitch
-	s.SendPacket(PlayPktClientBoundPlayerPosition, buildPlayerPositionSync(s.teleportSeq, x, y, z, yaw, pitch))
-	s.server.BroadcastEntityMove(s)
-}
-
 func (s *PlayerSession) writeLoop() {
 	for {
 		select {
@@ -151,6 +142,10 @@ func (s *PlayerSession) readLoop() {
 			s.handleConfig(packetID, payload)
 		case StatePlay:
 			s.handlePlay(packetID, payload)
+		case StatePlayPending:
+			// The tick owner has accepted FinishConfiguration but has not yet
+			// published the initialized Play state. No serverbound Play packet
+			// is valid until the first clientbound Play packet is emitted.
 		}
 	}
 }
@@ -231,22 +226,48 @@ func (s *PlayerSession) handleConfig(packetID int, payload []byte) {
 			s.Close()
 			return
 		}
-		s.setState(StatePlay)
-		s.enterPlay()
+		if s.server == nil {
+			s.Close()
+			return
+		}
+		s.setState(StatePlayPending)
+		if !s.server.postRuntime(func() {
+			if s.State() != StatePlayPending {
+				return
+			}
+			s.enterPlay()
+		}) {
+			logWarn("[runtime] unable to enqueue Play initialization for %s", s.conn.RemoteAddr())
+			s.Close()
+		}
 	case ConfigPktServerBoundKeepAlive:
 	case ConfigPktServerBoundPong:
 	}
 }
 
+// enterPlay runs on the tick owner. From this point onward the gameplay fields
+// on PlayerSession are authoritative tick-owned state.
 func (s *PlayerSession) enterPlay() {
+	if s.State() == StateClosed {
+		return
+	}
+
 	cfg := s.server.configMgr.Get()
 	s.gameMode = cfg.GameMode
 	s.x = cfg.SpawnX
 	s.y = cfg.SpawnY
 	s.z = cfg.SpawnZ
+	s.yaw = 0
+	s.pitch = 0
+	s.onGround = false
+	s.teleportSeq = 1
+	s.publishPlayerSnapshot()
+
+	// Publish Play only after all gameplay fields are initialized. Any incoming
+	// Play packet can then only enqueue work for a later tick.
+	s.setState(StatePlay)
 
 	s.SendPacket(PlayPktClientBoundLogin, buildPlayLogin(s.entityID, cfg.MaxPlayers, s.gameMode, true))
-	s.teleportSeq = 1
 	s.SendPacket(PlayPktClientBoundPlayerPosition, buildPlayerPositionSync(s.teleportSeq, s.x, s.y, s.z, s.yaw, s.pitch))
 	s.SendPacket(PlayPktClientBoundSetCenterChunk, buildCenterChunk(0, 0))
 
@@ -280,73 +301,78 @@ func (s *PlayerSession) handlePlay(packetID int, payload []byte) {
 	case PlayPktServerBoundKeepAlive:
 	case PlayPktServerBoundMovePos:
 		buf := bytes.NewReader(payload)
-		binary.Read(buf, binary.BigEndian, &s.x)
-		binary.Read(buf, binary.BigEndian, &s.y)
-		binary.Read(buf, binary.BigEndian, &s.z)
-		if buf.Len() > 0 {
-			var og byte
-			binary.Read(buf, binary.BigEndian, &og)
-			s.onGround = og == 1
+		var move playerMove
+		move.hasPosition = true
+		if binary.Read(buf, binary.BigEndian, &move.x) != nil ||
+			binary.Read(buf, binary.BigEndian, &move.y) != nil ||
+			binary.Read(buf, binary.BigEndian, &move.z) != nil {
+			return
 		}
-		s.checkVoidFall()
-		s.server.BroadcastEntityMove(s)
+		var onGround byte
+		if binary.Read(buf, binary.BigEndian, &onGround) != nil {
+			return
+		}
+		move.onGround = onGround != 0
+		s.server.postPlayerRuntime(s, func() { s.server.applyPlayerMove(s, move) })
 	case PlayPktServerBoundMovePosRot:
 		buf := bytes.NewReader(payload)
-		binary.Read(buf, binary.BigEndian, &s.x)
-		binary.Read(buf, binary.BigEndian, &s.y)
-		binary.Read(buf, binary.BigEndian, &s.z)
-		binary.Read(buf, binary.BigEndian, &s.yaw)
-		binary.Read(buf, binary.BigEndian, &s.pitch)
-		if buf.Len() > 0 {
-			var og byte
-			binary.Read(buf, binary.BigEndian, &og)
-			s.onGround = og == 1
+		var move playerMove
+		move.hasPosition = true
+		move.hasRotation = true
+		if binary.Read(buf, binary.BigEndian, &move.x) != nil ||
+			binary.Read(buf, binary.BigEndian, &move.y) != nil ||
+			binary.Read(buf, binary.BigEndian, &move.z) != nil ||
+			binary.Read(buf, binary.BigEndian, &move.yaw) != nil ||
+			binary.Read(buf, binary.BigEndian, &move.pitch) != nil {
+			return
 		}
-		s.checkVoidFall()
-		s.server.BroadcastEntityMove(s)
+		var onGround byte
+		if binary.Read(buf, binary.BigEndian, &onGround) != nil {
+			return
+		}
+		move.onGround = onGround != 0
+		s.server.postPlayerRuntime(s, func() { s.server.applyPlayerMove(s, move) })
 	case PlayPktServerBoundMoveRot:
 		buf := bytes.NewReader(payload)
-		binary.Read(buf, binary.BigEndian, &s.yaw)
-		binary.Read(buf, binary.BigEndian, &s.pitch)
-		if buf.Len() > 0 {
-			var og byte
-			binary.Read(buf, binary.BigEndian, &og)
-			s.onGround = og == 1
+		var move playerMove
+		move.hasRotation = true
+		if binary.Read(buf, binary.BigEndian, &move.yaw) != nil ||
+			binary.Read(buf, binary.BigEndian, &move.pitch) != nil {
+			return
 		}
-		s.server.BroadcastEntityMove(s)
+		var onGround byte
+		if binary.Read(buf, binary.BigEndian, &onGround) != nil {
+			return
+		}
+		move.onGround = onGround != 0
+		s.server.postPlayerRuntime(s, func() { s.server.applyPlayerMove(s, move) })
 	case PlayPktServerBoundMoveStatus:
 		buf := bytes.NewReader(payload)
-		if buf.Len() > 0 {
-			var og byte
-			binary.Read(buf, binary.BigEndian, &og)
-			s.onGround = og == 1
+		var onGround byte
+		if binary.Read(buf, binary.BigEndian, &onGround) != nil {
+			return
 		}
+		move := playerMove{onGround: onGround != 0}
+		s.server.postPlayerRuntime(s, func() { s.server.applyPlayerMove(s, move) })
 	case PlayPktServerBoundChat:
 		buf := bytes.NewReader(payload)
 		msg, err := readString(buf)
 		if err == nil && msg != "" {
-			s.server.HandlePlayerChat(s, msg)
+			s.server.postPlayerRuntime(s, func() { s.server.HandlePlayerChat(s, msg) })
 		}
 	case PlayPktServerBoundChatCommand:
 		buf := bytes.NewReader(payload)
 		cmd, err := readString(buf)
 		if err == nil && cmd != "" {
-			s.server.HandlePlayerChat(s, "/"+cmd)
+			message := "/" + cmd
+			s.server.postPlayerRuntime(s, func() { s.server.HandlePlayerChat(s, message) })
 		}
 	case PlayPktServerBoundSwing:
-		s.server.BroadcastAnimation(s, 0)
+		s.server.postPlayerRuntime(s, func() { s.server.BroadcastAnimation(s, 0) })
 	case PlayPktServerBoundPlayerAction:
 		s.handlePlayerAction(payload)
 	case PlayPktServerBoundUseItemOn:
 		s.handleUseItemOn(payload)
-	}
-}
-
-func (s *PlayerSession) checkVoidFall() {
-	if s.y < -10.0 {
-		w := s.server.world
-		s.Teleport(w.spawnX, w.spawnY, w.spawnZ, s.yaw, s.pitch)
-		s.SendSystemMessage("&e[保护] 你已坠入虚空，已自动将你拉回出生点平台！")
 	}
 }
 
@@ -359,18 +385,18 @@ func (s *PlayerSession) handlePlayerAction(payload []byte) {
 	_ = binary.Read(buf, binary.BigEndian, &face)
 	seq, _ := readVarInt(buf)
 
-	if err1 != nil || err2 != nil {
+	if err1 != nil || err2 != nil || (status != 0 && status != 2) {
 		return
 	}
 
-	if status == 0 || status == 2 {
-		x, y, z := unpackPosition(posVal)
+	x, y, z := unpackPosition(posVal)
+	s.server.postPlayerRuntime(s, func() {
 		s.server.world.SetBlock(x, y, z, BlockAir)
 		s.server.BroadcastBlockUpdate(x, y, z, BlockAir)
 		if seq >= 0 {
 			s.SendPacket(PlayPktClientBoundBlockChangedAck, buildBlockChangedAck(seq))
 		}
-	}
+	})
 }
 
 func (s *PlayerSession) handleUseItemOn(payload []byte) {
@@ -382,14 +408,20 @@ func (s *PlayerSession) handleUseItemOn(payload []byte) {
 	}
 	face, _ := readVarInt(buf)
 	var cx, cy, cz float32
-	binary.Read(buf, binary.BigEndian, &cx)
-	binary.Read(buf, binary.BigEndian, &cy)
-	binary.Read(buf, binary.BigEndian, &cz)
+	if binary.Read(buf, binary.BigEndian, &cx) != nil ||
+		binary.Read(buf, binary.BigEndian, &cy) != nil ||
+		binary.Read(buf, binary.BigEndian, &cz) != nil {
+		return
+	}
 	var inside byte
-	binary.Read(buf, binary.BigEndian, &inside)
+	if binary.Read(buf, binary.BigEndian, &inside) != nil {
+		return
+	}
 	if buf.Len() > 0 {
-		var wb byte
-		binary.Read(buf, binary.BigEndian, &wb)
+		var worldBorderHit byte
+		if binary.Read(buf, binary.BigEndian, &worldBorderHit) != nil {
+			return
+		}
 	}
 	seq, _ := readVarInt(buf)
 
@@ -408,12 +440,16 @@ func (s *PlayerSession) handleUseItemOn(payload []byte) {
 		tx--
 	case 5:
 		tx++
+	default:
+		return
 	}
 
-	blockID := BlockStoneBricks
-	s.server.world.SetBlock(tx, ty, tz, blockID)
-	s.server.BroadcastBlockUpdate(tx, ty, tz, blockID)
-	if seq >= 0 {
-		s.SendPacket(PlayPktClientBoundBlockChangedAck, buildBlockChangedAck(seq))
-	}
+	s.server.postPlayerRuntime(s, func() {
+		blockID := BlockStoneBricks
+		s.server.world.SetBlock(tx, ty, tz, blockID)
+		s.server.BroadcastBlockUpdate(tx, ty, tz, blockID)
+		if seq >= 0 {
+			s.SendPacket(PlayPktClientBoundBlockChangedAck, buildBlockChangedAck(seq))
+		}
+	})
 }

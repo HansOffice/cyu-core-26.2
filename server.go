@@ -179,6 +179,7 @@ func (s *Server) keepAliveLoop() {
 
 func (s *Server) tick() {
 	s.drainRuntimeEvents(maxRuntimeEventsPerTick)
+	s.runPluginScheduler()
 
 	age, tod := s.world.AdvanceTime(1)
 	if age%tick.DefaultRate == 0 {
@@ -391,7 +392,6 @@ func (s *Server) BroadcastMessage(text string, exclude *PlayerSession) {
 			if exclude == nil || session != exclude {
 				session.SendPacket(PlayPktClientBoundSystemChat, payload)
 			}
-		}
 		return true
 	})
 }

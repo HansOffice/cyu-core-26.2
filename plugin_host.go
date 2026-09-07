@@ -9,6 +9,8 @@ import (
 	"cyu-core-26.2/internal/pluginruntime"
 )
 
+const maxPluginTasksPerTick = 256
+
 // RegisterPlugin is a host-side registration boundary used by future loaders
 // and built-in integration tests. Plugins themselves never receive *Server.
 func (s *Server) RegisterPlugin(candidate pluginapi.Plugin) error {
@@ -31,6 +33,15 @@ func (s *Server) dispatchPluginEvent(event eventapi.Event) {
 	}
 	for _, err := range s.plugins.Dispatch(event) {
 		logWarn("[plugin] event dispatch error: %v", err)
+	}
+}
+
+func (s *Server) runPluginScheduler() {
+	if s == nil || s.plugins == nil {
+		return
+	}
+	for _, err := range s.plugins.AdvanceTick(maxPluginTasksPerTick) {
+		logWarn("[plugin] scheduled task error: %v", err)
 	}
 }
 

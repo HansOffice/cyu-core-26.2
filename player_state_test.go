@@ -64,3 +64,23 @@ func TestOwnedGameModePublishesSnapshot(t *testing.T) {
 		t.Fatalf("snapshot game mode = %d, want 3", got)
 	}
 }
+
+func TestPlayerSnapshotPublicationDoesNotAllocate(t *testing.T) {
+	session := &PlayerSession{
+		gameMode: 1,
+		x:        10.25,
+		y:        64,
+		z:        -3.5,
+		yaw:      90,
+		pitch:    12,
+		onGround: true,
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		session.publishPlayerSnapshot()
+		_ = session.readPlayerSnapshot()
+	})
+	if allocs != 0 {
+		t.Fatalf("snapshot publish/read allocations = %.2f, want 0", allocs)
+	}
+}

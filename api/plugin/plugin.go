@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	eventapi "cyu-core-26.2/api/event"
+	schedulerapi "cyu-core-26.2/api/scheduler"
 )
 
 const (
@@ -102,6 +103,7 @@ type Context interface {
 	Descriptor() Descriptor
 	Logger() Logger
 	Events() eventapi.Registrar
+	Scheduler() schedulerapi.Registrar
 }
 
 // Plugin is the loader-independent lifecycle contract. Dynamic runtimes such as

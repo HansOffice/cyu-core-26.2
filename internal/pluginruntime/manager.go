@@ -12,6 +12,7 @@ import (
 
 	eventapi "cyu-core-26.2/api/event"
 	pluginapi "cyu-core-26.2/api/plugin"
+	schedulerapi "cyu-core-26.2/api/scheduler"
 )
 
 var (
@@ -64,6 +65,11 @@ type Snapshot struct {
 	EventErrors        uint64
 	EventTotalDuration time.Duration
 	EventMaxDuration   time.Duration
+	TaskCalls          uint64
+	TaskErrors         uint64
+	TaskTotalDuration  time.Duration
+	TaskMaxDuration    time.Duration
+	ScheduledTasks     int64
 }
 
 // LoggerFactory lets the host attach a plugin identity to log records without
@@ -115,6 +121,7 @@ type Manager struct {
 
 	loggerFactory LoggerFactory
 	events        *eventBus
+	scheduler     *taskScheduler
 	active        atomic.Bool
 }
 
@@ -123,6 +130,7 @@ func New(loggerFactory LoggerFactory) *Manager {
 		entries:       make(map[pluginapi.ID]*entry),
 		loggerFactory: loggerFactory,
 		events:        newEventBus(),
+		scheduler:     newTaskScheduler(),
 	}
 }
 
@@ -166,6 +174,7 @@ func (m *Manager) Register(candidate pluginapi.Plugin) error {
 		descriptor: descriptor,
 		logger:     logger,
 		events:     m.events.registrar(current),
+		scheduler:  m.scheduler.registrar(current),
 	}
 
 	m.mu.Lock()
@@ -200,6 +209,7 @@ func (m *Manager) EnableAll() error {
 	for _, current := range entries {
 		current.enabled.Store(false)
 		current.acceptSubscriptions.Store(true)
+		m.scheduler.openOwner(current)
 		m.updateEntryState(current, StateEnabling, 0, "")
 
 		started := time.Now()
@@ -280,6 +290,7 @@ func (m *Manager) DisableAll() error {
 func (m *Manager) disableEntry(current *entry, successState State) error {
 	current.enabled.Store(false)
 	current.acceptSubscriptions.Store(false)
+	m.scheduler.closeOwner(current)
 	m.setState(current, StateDisabling)
 
 	started := time.Now()
@@ -307,6 +318,15 @@ func (m *Manager) Dispatch(event eventapi.Event) []error {
 	return m.events.dispatch(event)
 }
 
+// AdvanceTick advances the plugin scheduler by exactly one server tick and
+// executes at most limit due tasks. It must be called by the runtime owner.
+func (m *Manager) AdvanceTick(limit int) []error {
+	if m == nil || m.scheduler == nil {
+		return nil
+	}
+	return m.scheduler.advance(limit)
+}
+
 func (m *Manager) Active() bool {
 	return m != nil && m.active.Load()
 }
@@ -321,6 +341,7 @@ func (m *Manager) Snapshots() []Snapshot {
 	snapshots := make([]Snapshot, 0, len(m.order))
 	for _, id := range m.order {
 		current := m.entries[id]
+		tasks := m.scheduler.snapshot(current)
 		snapshots = append(snapshots, Snapshot{
 			Descriptor:         current.descriptor,
 			State:              current.state,
@@ -331,6 +352,11 @@ func (m *Manager) Snapshots() []Snapshot {
 			EventErrors:        current.eventErrors.Load(),
 			EventTotalDuration: time.Duration(current.eventNanos.Load()),
 			EventMaxDuration:   time.Duration(current.maxEventNanos.Load()),
+			TaskCalls:          tasks.calls,
+			TaskErrors:         tasks.errors,
+			TaskTotalDuration:  tasks.totalDuration,
+			TaskMaxDuration:    tasks.maxDuration,
+			ScheduledTasks:     tasks.pending,
 		})
 	}
 	return snapshots
@@ -384,11 +410,13 @@ type lifecycleContext struct {
 	descriptor pluginapi.Descriptor
 	logger     pluginapi.Logger
 	events     eventapi.Registrar
+	scheduler  schedulerapi.Registrar
 }
 
-func (c lifecycleContext) Descriptor() pluginapi.Descriptor { return c.descriptor }
-func (c lifecycleContext) Logger() pluginapi.Logger         { return c.logger }
-func (c lifecycleContext) Events() eventapi.Registrar       { return c.events }
+func (c lifecycleContext) Descriptor() pluginapi.Descriptor  { return c.descriptor }
+func (c lifecycleContext) Logger() pluginapi.Logger          { return c.logger }
+func (c lifecycleContext) Events() eventapi.Registrar        { return c.events }
+func (c lifecycleContext) Scheduler() schedulerapi.Registrar { return c.scheduler }
 
 type discardLogger struct{}
 

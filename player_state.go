@@ -67,13 +67,13 @@ func (s *playerSnapshotStore) Load() playerSnapshot {
 		}
 
 		snapshot := playerSnapshot{
-			gameMode:   int(s.gameMode.Load()),
-			x:          math.Float64frombits(s.x.Load()),
-			y:          math.Float64frombits(s.y.Load()),
-			z:          math.Float64frombits(s.z.Load()),
-			yaw:        math.Float32frombits(s.yaw.Load()),
-			pitch:      math.Float32frombits(s.pitch.Load()),
-			onGround:   s.onGround.Load(),
+			gameMode: int(s.gameMode.Load()),
+			x:        math.Float64frombits(s.x.Load()),
+			y:        math.Float64frombits(s.y.Load()),
+			z:        math.Float64frombits(s.z.Load()),
+			yaw:      math.Float32frombits(s.yaw.Load()),
+			pitch:    math.Float32frombits(s.pitch.Load()),
+			onGround: s.onGround.Load(),
 		}
 		end := s.sequence.Load()
 		if start == end && end&1 == 0 {
@@ -87,13 +87,13 @@ func (s *PlayerSession) publishPlayerSnapshot() {
 		return
 	}
 	s.playerSnapshot.Store(playerSnapshot{
-		gameMode:   s.gameMode,
-		x:          s.x,
-		y:          s.y,
-		z:          s.z,
-		yaw:        s.yaw,
-		pitch:      s.pitch,
-		onGround:   s.onGround,
+		gameMode: s.gameMode,
+		x:        s.x,
+		y:        s.y,
+		z:        s.z,
+		yaw:      s.yaw,
+		pitch:    s.pitch,
+		onGround: s.onGround,
 	})
 }
 

@@ -45,9 +45,9 @@ func ParseType(raw string) (Type, error) {
 	return Type(raw), nil
 }
 
-// Event is a public, immutable event value from the plugin's perspective.
-// Concrete event contracts live in versioned public API packages, not in the
-// internal runtime or Minecraft protocol packages.
+// Event is the public event contract. Most concrete events are immutable value
+// notifications; decision events may expose narrowly documented mutation such
+// as Cancel or SetMessage. Plugins never receive dispatch authority through it.
 type Event interface {
 	Type() Type
 }

@@ -15,7 +15,7 @@ on:
       - "internal/vanilla/datagen/**"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   capture:
@@ -114,6 +114,21 @@ jobs:
 
       - name: Validate generated dataset
         run: go test ./...
+
+      - name: Publish generated dataset on foundation branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/registry-data-foundation'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/26.2/registry-set.json data/26.2/manifest.json
+          if git diff --cached --quiet; then
+            echo "generated dataset is unchanged"
+          else
+            git commit -m "data(v776): capture vanilla 26.2 configuration dataset"
+            git push
+          fi
 
       - name: Upload capture artifact
         if: always()

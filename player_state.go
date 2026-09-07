@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	runtimeMailboxCapacity   = 4096
-	maxRuntimeTasksPerTick   = 1024
+	runtimeMailboxCapacity = 4096
+	maxRuntimeTasksPerTick = 1024
 )
 
 type playerMove struct {

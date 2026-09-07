@@ -22,7 +22,7 @@ import (
 
 const (
 	minecraftVersion = "26.2"
-	dataVersion       = 4903
+	dataVersion      = 4903
 
 	handshakeNextLogin = 2
 

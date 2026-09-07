@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	eventapi "cyu-core-26.2/api/event"
 	pluginapi "cyu-core-26.2/api/plugin"
 )
 
@@ -53,11 +55,15 @@ func (s State) String() string {
 
 // Snapshot is an immutable diagnostic view suitable for status/timing surfaces.
 type Snapshot struct {
-	Descriptor      pluginapi.Descriptor
-	State           State
-	EnableDuration  time.Duration
-	DisableDuration time.Duration
-	LastError       string
+	Descriptor         pluginapi.Descriptor
+	State              State
+	EnableDuration     time.Duration
+	DisableDuration    time.Duration
+	LastError          string
+	EventCalls         uint64
+	EventErrors        uint64
+	EventTotalDuration time.Duration
+	EventMaxDuration   time.Duration
 }
 
 // LoggerFactory lets the host attach a plugin identity to log records without
@@ -65,29 +71,58 @@ type Snapshot struct {
 type LoggerFactory func(pluginapi.Descriptor) pluginapi.Logger
 
 type entry struct {
-	plugin          pluginapi.Plugin
-	descriptor      pluginapi.Descriptor
-	context         lifecycleContext
+	plugin     pluginapi.Plugin
+	descriptor pluginapi.Descriptor
+	context    lifecycleContext
+
+	enabled             atomic.Bool
+	acceptSubscriptions atomic.Bool
+	eventCalls          atomic.Uint64
+	eventErrors         atomic.Uint64
+	eventNanos          atomic.Uint64
+	maxEventNanos       atomic.Uint64
+
 	state           State
 	enableDuration  time.Duration
 	disableDuration time.Duration
 	lastError       string
 }
 
+func (e *entry) recordEventCall(duration time.Duration, failed bool) {
+	nanos := uint64(max(duration.Nanoseconds(), 0))
+	e.eventCalls.Add(1)
+	e.eventNanos.Add(nanos)
+	if failed {
+		e.eventErrors.Add(1)
+	}
+	for {
+		current := e.maxEventNanos.Load()
+		if nanos <= current || e.maxEventNanos.CompareAndSwap(current, nanos) {
+			break
+		}
+	}
+}
+
 // Manager owns deterministic plugin registration and lifecycle ordering.
-// Lifecycle calls are serialized and never run concurrently with each other.
+// lifecycleMu serializes registration/enable/disable without holding the state
+// mutex while plugin code executes; plugin callbacks therefore cannot deadlock
+// the manager merely by using capabilities supplied through Context.
 type Manager struct {
-	mu            sync.Mutex
-	entries       map[pluginapi.ID]*entry
-	order         []pluginapi.ID
+	lifecycleMu sync.Mutex
+	mu          sync.RWMutex
+	entries     map[pluginapi.ID]*entry
+	order       []pluginapi.ID
+
 	loggerFactory LoggerFactory
-	active        bool
+	events        *eventBus
+	active        atomic.Bool
 }
 
 func New(loggerFactory LoggerFactory) *Manager {
 	return &Manager{
 		entries:       make(map[pluginapi.ID]*entry),
 		loggerFactory: loggerFactory,
+		events:        newEventBus(),
 	}
 }
 
@@ -97,6 +132,11 @@ func (m *Manager) Register(candidate pluginapi.Plugin) error {
 	if m == nil || candidate == nil {
 		return ErrNilPlugin
 	}
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.active.Load() {
+		return ErrManagerActive
+	}
 
 	descriptor, err := readDescriptor(candidate)
 	if err != nil {
@@ -104,15 +144,6 @@ func (m *Manager) Register(candidate pluginapi.Plugin) error {
 	}
 	if err := descriptor.Validate(); err != nil {
 		return err
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.active {
-		return ErrManagerActive
-	}
-	if _, exists := m.entries[descriptor.ID]; exists {
-		return fmt.Errorf("%w: %s", ErrDuplicatePlugin, descriptor.ID)
 	}
 
 	logger := pluginapi.Logger(discardLogger{})
@@ -126,15 +157,23 @@ func (m *Manager) Register(candidate pluginapi.Plugin) error {
 		}
 	}
 
-	m.entries[descriptor.ID] = &entry{
+	current := &entry{
 		plugin:     candidate,
 		descriptor: descriptor,
-		context: lifecycleContext{
-			descriptor: descriptor,
-			logger:     logger,
-		},
-		state: StateRegistered,
+		state:      StateRegistered,
 	}
+	current.context = lifecycleContext{
+		descriptor: descriptor,
+		logger:     logger,
+		events:     m.events.registrar(current),
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.entries[descriptor.ID]; exists {
+		return fmt.Errorf("%w: %s", ErrDuplicatePlugin, descriptor.ID)
+	}
+	m.entries[descriptor.ID] = current
 	m.order = append(m.order, descriptor.ID)
 	return nil
 }
@@ -146,38 +185,41 @@ func (m *Manager) EnableAll() error {
 	if m == nil {
 		return nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.active {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.active.Load() {
 		return ErrManagerActive
 	}
-	if err := m.validateEnableStates(); err != nil {
+
+	entries, err := m.enablePlan()
+	if err != nil {
 		return err
 	}
 
-	enabled := make([]*entry, 0, len(m.order))
-	for _, id := range m.order {
-		current := m.entries[id]
-		current.state = StateEnabling
+	enabled := make([]*entry, 0, len(entries))
+	for _, current := range entries {
+		current.enabled.Store(false)
+		current.acceptSubscriptions.Store(true)
+		m.updateEntryState(current, StateEnabling, 0, "")
+
 		started := time.Now()
 		err := invokeLifecycle(current, "enable", func() error {
 			return current.plugin.Enable(current.context)
 		})
-		current.enableDuration = time.Since(started)
+		duration := time.Since(started)
 		if err == nil {
-			current.state = StateEnabled
-			current.lastError = ""
+			current.enabled.Store(true)
+			m.updateEntryState(current, StateEnabled, duration, "")
 			enabled = append(enabled, current)
 			continue
 		}
 
-		failure := fmt.Errorf("enable plugin %s: %w", id, err)
+		failure := fmt.Errorf("enable plugin %s: %w", current.descriptor.ID, err)
 		failures := []error{failure}
-		cleanupErr := m.disableEntry(current, StateFailed)
-		if cleanupErr != nil {
-			failures = append(failures, fmt.Errorf("cleanup plugin %s: %w", id, cleanupErr))
+		if cleanupErr := m.disableEntry(current, StateFailed); cleanupErr != nil {
+			failures = append(failures, fmt.Errorf("cleanup plugin %s: %w", current.descriptor.ID, cleanupErr))
 		}
-		current.lastError = errors.Join(failures...).Error()
+		m.setLastError(current, errors.Join(failures...).Error())
 
 		for index := len(enabled) - 1; index >= 0; index-- {
 			rollback := enabled[index]
@@ -185,27 +227,31 @@ func (m *Manager) EnableAll() error {
 				failures = append(failures, fmt.Errorf("rollback plugin %s: %w", rollback.descriptor.ID, rollbackErr))
 			}
 		}
-		m.active = false
+		m.active.Store(false)
 		return errors.Join(failures...)
 	}
 
-	m.active = true
+	m.active.Store(true)
 	return nil
 }
 
-func (m *Manager) validateEnableStates() error {
+func (m *Manager) enablePlan() ([]*entry, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	entries := make([]*entry, 0, len(m.order))
 	for _, id := range m.order {
 		current := m.entries[id]
 		switch current.state {
 		case StateRegistered, StateDisabled:
-			continue
+			entries = append(entries, current)
 		case StateFailed:
-			return fmt.Errorf("%w: %s", ErrPluginFailed, id)
+			return nil, fmt.Errorf("%w: %s", ErrPluginFailed, id)
 		default:
-			return fmt.Errorf("pluginruntime: cannot enable %s from state %s", id, current.state)
+			return nil, fmt.Errorf("pluginruntime: cannot enable %s from state %s", id, current.state)
 		}
 	}
-	return nil
+	return entries, nil
 }
 
 // DisableAll disables enabled plugins in reverse registration order. Every
@@ -214,79 +260,135 @@ func (m *Manager) DisableAll() error {
 	if m == nil {
 		return nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 
+	entries := m.entriesInReverseOrder()
 	var failures []error
-	for index := len(m.order) - 1; index >= 0; index-- {
-		current := m.entries[m.order[index]]
-		if current.state != StateEnabled {
+	for _, current := range entries {
+		if m.entryState(current) != StateEnabled {
 			continue
 		}
 		if err := m.disableEntry(current, StateDisabled); err != nil {
 			failures = append(failures, fmt.Errorf("disable plugin %s: %w", current.descriptor.ID, err))
 		}
 	}
-	m.active = false
+	m.active.Store(false)
 	return errors.Join(failures...)
 }
 
 func (m *Manager) disableEntry(current *entry, successState State) error {
-	current.state = StateDisabling
+	current.enabled.Store(false)
+	current.acceptSubscriptions.Store(false)
+	m.setState(current, StateDisabling)
+
 	started := time.Now()
 	err := invokeLifecycle(current, "disable", func() error {
 		return current.plugin.Disable(current.context)
 	})
-	current.disableDuration = time.Since(started)
+	duration := time.Since(started)
+	m.events.removeOwner(current)
+
 	if err != nil {
-		current.state = StateFailed
-		current.lastError = err.Error()
+		m.updateDisableState(current, StateFailed, duration, err.Error())
 		return err
 	}
-	current.state = successState
-	if successState != StateFailed {
-		current.lastError = ""
-	}
+	m.updateDisableState(current, successState, duration, "")
 	return nil
 }
 
-func (m *Manager) Active() bool {
+// Dispatch invokes currently enabled plugin handlers synchronously. The server
+// runtime owns when this method is called; plugins only receive a subscription
+// capability and cannot dispatch arbitrary events themselves.
+func (m *Manager) Dispatch(event eventapi.Event) []error {
 	if m == nil {
-		return false
+		return nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.active
+	return m.events.dispatch(event)
+}
+
+func (m *Manager) Active() bool {
+	return m != nil && m.active.Load()
 }
 
 func (m *Manager) Snapshots() []Snapshot {
 	if m == nil {
 		return nil
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	snapshots := make([]Snapshot, 0, len(m.order))
 	for _, id := range m.order {
 		current := m.entries[id]
 		snapshots = append(snapshots, Snapshot{
-			Descriptor:      current.descriptor,
-			State:           current.state,
-			EnableDuration:  current.enableDuration,
-			DisableDuration: current.disableDuration,
-			LastError:       current.lastError,
+			Descriptor:         current.descriptor,
+			State:              current.state,
+			EnableDuration:     current.enableDuration,
+			DisableDuration:    current.disableDuration,
+			LastError:          current.lastError,
+			EventCalls:         current.eventCalls.Load(),
+			EventErrors:        current.eventErrors.Load(),
+			EventTotalDuration: time.Duration(current.eventNanos.Load()),
+			EventMaxDuration:   time.Duration(current.maxEventNanos.Load()),
 		})
 	}
 	return snapshots
 }
 
+func (m *Manager) entriesInReverseOrder() []*entry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	entries := make([]*entry, 0, len(m.order))
+	for index := len(m.order) - 1; index >= 0; index-- {
+		entries = append(entries, m.entries[m.order[index]])
+	}
+	return entries
+}
+
+func (m *Manager) entryState(current *entry) State {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return current.state
+}
+
+func (m *Manager) setState(current *entry, state State) {
+	m.mu.Lock()
+	current.state = state
+	m.mu.Unlock()
+}
+
+func (m *Manager) updateEntryState(current *entry, state State, enableDuration time.Duration, lastError string) {
+	m.mu.Lock()
+	current.state = state
+	current.enableDuration = enableDuration
+	current.lastError = lastError
+	m.mu.Unlock()
+}
+
+func (m *Manager) updateDisableState(current *entry, state State, disableDuration time.Duration, lastError string) {
+	m.mu.Lock()
+	current.state = state
+	current.disableDuration = disableDuration
+	current.lastError = lastError
+	m.mu.Unlock()
+}
+
+func (m *Manager) setLastError(current *entry, lastError string) {
+	m.mu.Lock()
+	current.lastError = lastError
+	m.mu.Unlock()
+}
+
 type lifecycleContext struct {
 	descriptor pluginapi.Descriptor
 	logger     pluginapi.Logger
+	events     eventapi.Registrar
 }
 
 func (c lifecycleContext) Descriptor() pluginapi.Descriptor { return c.descriptor }
 func (c lifecycleContext) Logger() pluginapi.Logger         { return c.logger }
+func (c lifecycleContext) Events() eventapi.Registrar       { return c.events }
 
 type discardLogger struct{}
 
@@ -327,8 +429,8 @@ func invokeLifecycle(current *entry, phase string, call func() error) (err error
 	return call()
 }
 
-// PanicError turns plugin/adapter panics into lifecycle errors instead of
-// letting untrusted extension code crash the server process.
+// PanicError turns plugin/adapter panics into lifecycle/event errors instead of
+// letting extension code crash the server process.
 type PanicError struct {
 	PluginID pluginapi.ID
 	Phase    string

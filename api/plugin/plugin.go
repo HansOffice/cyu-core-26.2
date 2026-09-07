@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	eventapi "cyu-core-26.2/api/event"
 )
 
 const (
@@ -99,6 +101,7 @@ type Logger interface {
 type Context interface {
 	Descriptor() Descriptor
 	Logger() Logger
+	Events() eventapi.Registrar
 }
 
 // Plugin is the loader-independent lifecycle contract. Dynamic runtimes such as
